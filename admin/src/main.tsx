@@ -4,7 +4,7 @@ import { createBrowserRouter, Link, NavLink, Outlet, redirect, useMatch, useNavi
 import { RouterProvider } from "react-router/dom";
 import type { SessionInfo } from "../../src/web/admin-types";
 import { api, getSession, setSession, useSession } from "./api";
-import { ErrorPage, FlashBanner, FlashProvider, NotFound, PageLoading, useTenant } from "./ui";
+import { ErrorPage, FlashProvider, NotFound, PageLoading, Toaster, useTenant } from "./ui";
 import "./styles.css";
 
 /**
@@ -63,9 +63,9 @@ function Root() {
       {navigation.state !== "idle" && <div className="loading-bar" />}
       <Header />
       <main>
-        <FlashBanner />
         <Outlet />
       </main>
+      <Toaster />
     </FlashProvider>
   );
 }

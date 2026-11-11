@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type Anthropic from "@anthropic-ai/sdk";
+import type OpenAI from "openai";
 import { AnthropicProvider } from "../src/ai/anthropic.js";
+import { OpenAIProvider } from "../src/ai/openai.js";
 import { AiRefusalError } from "../src/ai/provider.js";
 import { blocksToMarkdown, markdownToBlocks, renderBlocks, renderInline } from "../src/content/blocks.js";
 import { aiArticlePublishDecision, aiThemeApplyDecision, TenantSettingsSchema } from "../src/tenancy.js";
@@ -142,6 +144,49 @@ test("AnthropicProvider sends structured-output request with fallbacks", async (
 test("AnthropicProvider surfaces refusals", async () => {
   const { client } = fakeClient({ stop_reason: "refusal", stop_details: { category: "cyber" }, parsed_output: null, usage: {} });
   await assert.rejects(new AnthropicProvider(client).writeArticle(articleReq), AiRefusalError);
+});
+
+function fakeOpenAI(response: Record<string, unknown>) {
+  const calls: Record<string, unknown>[] = [];
+  const client = {
+    responses: {
+      parse: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return response;
+      },
+    },
+  } as unknown as OpenAI;
+  return { client, calls };
+}
+
+test("OpenAIProvider sends a structured-output request and swaps Claude model names", async () => {
+  const draft = { title: "T", summary: "S", seoDescription: "D", tags: ["a"], blocks: [{ type: "paragraph", text: "hi" }] };
+  const { client, calls } = fakeOpenAI({
+    status: "completed",
+    output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(draft) }] }],
+    output_parsed: draft,
+    model: "gpt-5.5",
+    usage: { input_tokens: 12, output_tokens: 34 },
+  });
+  const res = await new OpenAIProvider(client).writeArticle(articleReq);
+  assert.deepEqual(res.value, draft);
+  assert.deepEqual(res.usage, { model: "gpt-5.5", inputTokens: 12, outputTokens: 34 });
+  const p = calls[0] as any;
+  assert.equal(p.model, config.openaiModel); // "claude-opus-5-5" isn't an OpenAI model
+  assert.deepEqual(p.reasoning, { effort: "medium" });
+  assert.equal(p.text.format.type, "json_schema");
+  assert.equal(p.text.format.strict, true);
+  assert.ok(p.input.includes("Be concise.") && p.input.includes("Old post"));
+
+  await new OpenAIProvider(client).writeArticle({ ...articleReq, model: "gpt-5.4-mini" });
+  assert.equal((calls[1] as any).model, "gpt-5.4-mini");
+});
+
+test("OpenAIProvider surfaces refusals and truncation", async () => {
+  const refusal = fakeOpenAI({ status: "completed", output: [{ type: "message", content: [{ type: "refusal", refusal: "no" }] }], output_parsed: null });
+  await assert.rejects(new OpenAIProvider(refusal.client).writeArticle(articleReq), AiRefusalError);
+  const cut = fakeOpenAI({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [], output_parsed: null });
+  await assert.rejects(new OpenAIProvider(cut.client).writeArticle(articleReq), /cut off/);
 });
 
 test("secrets: encrypt/decrypt round-trip, wrong APP_SECRET fails closed", () => {

@@ -1,31 +1,56 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { isRouteErrorResponse, Link, useLocation, useRouteError, useRouteLoaderData } from "react-router";
 import type { ArticleSummary, JobSummary, Role, TenantInfo } from "../../src/web/admin-types";
 import { ROLE_LIST } from "../../src/web/admin-types";
 
-// ---- flash messages ------------------------------------------------------------------------
+// ---- toasts (flash messages) ---------------------------------------------------------------
 
-type Flash = { kind: "ok" | "err"; text: string } | null;
-const FlashCtx = createContext<{ flash: Flash; notify: (text: string) => void; fail: (e: unknown) => void }>(null!);
+type Toast = { id: number; kind: "ok" | "err"; text: string };
+const FlashCtx = createContext<{ toasts: Toast[]; notify: (text: string) => void; fail: (e: unknown) => void; dismiss: (id: number) => void }>(null!);
+const TOAST_MS = { ok: 3500, err: 7000 };
+let nextToastId = 1;
 
-/** Messages survive one navigation when passed as `navigate(to, { state: { flash } })`. */
+/**
+ * Every `notify()` / `fail()` shows a toast that dismisses itself. A message also survives one
+ * navigation when passed as `navigate(to, { state: { flash } })`.
+ */
 export function FlashProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
-  const [flash, setFlash] = useState<Flash>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const seen = useRef(new Set<string>()); // location keys whose flash was shown (StrictMode, back/forward)
+  const dismiss = useCallback((id: number) => setToasts((ts) => ts.filter((t) => t.id !== id)), []);
+  const push = useCallback(
+    (kind: Toast["kind"], text: string) => {
+      const id = nextToastId++;
+      setToasts((ts) => [...ts.slice(-4), { id, kind, text }]);
+      setTimeout(() => dismiss(id), TOAST_MS[kind]);
+    },
+    [dismiss],
+  );
   useEffect(() => {
     const f = (location.state as { flash?: string } | null)?.flash;
-    setFlash(f ? { kind: "ok", text: f } : null);
+    if (f && !seen.current.has(location.key)) {
+      seen.current.add(location.key);
+      push("ok", f);
+    }
   }, [location.key]);
-  const notify = useCallback((text: string) => setFlash({ kind: "ok", text }), []);
-  const fail = useCallback((e: unknown) => setFlash({ kind: "err", text: e instanceof Error ? e.message : String(e) }), []);
-  return <FlashCtx.Provider value={{ flash, notify, fail }}>{children}</FlashCtx.Provider>;
+  const notify = useCallback((text: string) => push("ok", text), [push]);
+  const fail = useCallback((e: unknown) => push("err", e instanceof Error ? e.message : String(e)), [push]);
+  return <FlashCtx.Provider value={{ toasts, notify, fail, dismiss }}>{children}</FlashCtx.Provider>;
 }
 export const useFlash = () => useContext(FlashCtx);
 
-export function FlashBanner() {
-  const { flash } = useFlash();
-  if (!flash) return null;
-  return <div className={`flash ${flash.kind === "err" ? "err" : ""}`}>{flash.text}</div>;
+export function Toaster() {
+  const { toasts, dismiss } = useFlash();
+  return (
+    <div className="toasts" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === "err" ? "alert" : "status"} onClick={() => dismiss(t.id)}>
+          <span>{t.kind === "err" ? "⚠" : "✓"}</span> {t.text}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Runs an async action with a busy flag; errors become an error flash. */

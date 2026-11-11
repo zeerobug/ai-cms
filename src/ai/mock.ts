@@ -33,7 +33,7 @@ export class MockProvider implements AIProvider {
         text: `When it comes to ${topic}, ${names[i].toLowerCase()} is where most people begin. Written in a ${req.tone} tone, this section would contain the substance a real model generates.`,
       });
       if (i === 1) blocks.push({ type: "list", ordered: false, items: ["Start small", "Measure what matters", "Iterate often"] });
-      if (i === 2) blocks.push({ type: "callout", tone: "tip", text: `Set \`AI_PROVIDER=anthropic\` and an API key to get real articles about ${topic}.` });
+      if (i === 2) blocks.push({ type: "callout", tone: "tip", text: `Choose Anthropic or OpenAI in Settings (or set an API key) to get real articles about ${topic}.` });
     }
     blocks.push({ type: "heading", level: 2, text: "The takeaway" });
     blocks.push({ type: "paragraph", text: `${Topic} is approachable once you break it down. ${req.instructions ? `(Instructions noted: ${req.instructions})` : ""}`.trim() });

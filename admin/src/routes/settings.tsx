@@ -11,13 +11,16 @@ const LENGTHS: ArticleLength[] = ["short", "medium", "long"];
 
 export function Component() {
   const s = useLoaderData() as SettingsData;
+  const { slug } = useTenant();
+  // The forms use uncontrolled inputs (defaultValue); key by site so switching
+  // sites remounts them instead of keeping the previous site's values.
   return (
-    <>
+    <div key={slug}>
       <h1>Settings</h1>
       <SettingsForm s={s} />
       <Members s={s} />
       <Tokens s={s} />
-    </>
+    </div>
   );
 }
 
@@ -107,7 +110,7 @@ function SettingsForm({ s }: { s: SettingsData }) {
 
         <h2>Generation</h2>
         <div className="row">
-          <div><label>Model</label><input name="model" defaultValue={ai.model} /></div>
+          <div><label>Model</label><input name="model" defaultValue={ai.model} title="e.g. claude-opus-5-5 for Anthropic, gpt-5.5 for OpenAI. A model from another provider is replaced by that provider's default." /></div>
           <div><label>Effort</label><select name="effort" defaultValue={ai.effort}>{EFFORTS.map((e) => <option key={e}>{e}</option>)}</select></div>
           <div><label>Who can use AI</label><RoleSelect name="minRoleToGenerate" defaultValue={ai.minRoleToGenerate} /></div>
         </div>
@@ -195,6 +198,7 @@ function Tokens({ s }: { s: SettingsData }) {
       form.reset();
       await revalidate();
       setNewToken(token);
+      notify("Token created.");
     });
   };
   const revoke = (id: number) =>

@@ -301,6 +301,15 @@ test("tenant LLM provider and API key: stored encrypted, used for jobs, platform
   await runJob("/t/byok/ai/article", s, { topic: "platform key fallback" });
   assert.deepEqual(factoryCalls, [{ name: "anthropic", apiKey: undefined }]);
 
+  // Switch to OpenAI with its own key; the provider list offers it.
+  assert.ok(settings.providers.some((p: { value: string }) => p.value === "openai"));
+  const oaKey = "sk-proj-openai-secret-5678";
+  assert.equal((await save({ provider: "openai" }, { apiKey: oaKey })).status, 200);
+  factoryCalls.length = 0;
+  await runJob("/t/byok/ai/article", s, { topic: "openai tenant key" });
+  assert.deepEqual(factoryCalls, [{ name: "openai", apiKey: oaKey }]);
+  assert.equal((await getJson("/t/byok/settings", s)).apiKey.masked.endsWith("5678"), true);
+
   // Undecryptable key (e.g. APP_SECRET changed) is rejected up front.
   repo.setTenantAiKey(t.id, "v1:garbage");
   const res = await post("/t/byok/ai/article", s, { topic: "broken key" });

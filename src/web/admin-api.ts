@@ -49,6 +49,7 @@ class HttpError extends Error {
 
 export const PROVIDER_LABELS: Record<(typeof AI_PROVIDERS)[number], string> = {
   anthropic: "Anthropic (Claude)",
+  openai: "OpenAI (GPT)",
   mock: "Mock (offline, for testing)",
 };
 

@@ -5,6 +5,14 @@ import fs from "node:fs";
 // Skipped under `node --test` so local secrets/keys don't leak into the test run.
 if (fs.existsSync(".env") && !process.env.NODE_TEST_CONTEXT) process.loadEnvFile(".env");
 
+const aiProvider = (process.env.AI_PROVIDER ??
+  (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN
+    ? "anthropic"
+    : process.env.OPENAI_API_KEY
+      ? "openai"
+      : "mock")) as "anthropic" | "openai" | "mock";
+const openaiModel = process.env.OPENAI_MODEL ?? "gpt-5.5";
+
 /**
  * Runtime configuration. Everything can be overridden with environment variables.
  */
@@ -25,14 +33,15 @@ export const config = {
   secret: process.env.APP_SECRET ?? crypto.randomBytes(32).toString("hex"),
   secretIsEphemeral: !process.env.APP_SECRET,
   /**
-   * "anthropic" uses the Claude API; "mock" uses a deterministic offline generator
-   * (great for demos and tests). Defaults to anthropic when an API key is present.
+   * "anthropic" uses the Claude API, "openai" the OpenAI API; "mock" uses a deterministic offline
+   * generator (great for demos and tests). Defaults to anthropic when an Anthropic key is present,
+   * else openai when OPENAI_API_KEY is set, else mock.
    * This is the platform default; each tenant can pick its own provider and API key in Settings.
    */
-  aiProvider: (process.env.AI_PROVIDER ??
-    (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN ? "anthropic" : "mock")) as
-    | "anthropic"
-    | "mock",
-  defaultModel: process.env.AI_MODEL ?? "claude-opus-5-5",
+  aiProvider,
+  /** Default model for new sites (follows the platform provider unless AI_MODEL is set). */
+  defaultModel: process.env.AI_MODEL ?? (aiProvider === "openai" ? openaiModel : "claude-opus-5-5"),
+  /** Model used for OpenAI requests when a site's model setting is a Claude model. */
+  openaiModel,
   secureCookies: process.env.NODE_ENV === "production",
 };

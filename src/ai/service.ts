@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { z } from "zod";
 import { config } from "../config.js";
 import type { Repo, Tenant } from "../repo.js";
@@ -8,6 +9,7 @@ import { normalizeTheme } from "../themes/spec.js";
 import { decryptSecret } from "../util/secrets.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { MockProvider } from "./mock.js";
+import { OpenAIProvider } from "./openai.js";
 import type { AIProvider, Usage } from "./provider.js";
 
 export class PolicyError extends Error {
@@ -51,7 +53,7 @@ export interface Actor {
 
 /**
  * Builds a provider instance. `apiKey` undefined = use the platform credentials
- * (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / profile).
+ * (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / profile, or OPENAI_API_KEY).
  */
 export type ProviderFactory = (name: AiProviderName, apiKey: string | undefined) => AIProvider;
 
@@ -59,6 +61,8 @@ export const defaultProviderFactory: ProviderFactory = (name, apiKey) => {
   switch (name) {
     case "anthropic":
       return new AnthropicProvider(apiKey ? new Anthropic({ apiKey }) : undefined);
+    case "openai":
+      return new OpenAIProvider(apiKey ? new OpenAI({ apiKey }) : undefined);
     case "mock":
       return new MockProvider(800);
   }

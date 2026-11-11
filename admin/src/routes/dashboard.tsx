@@ -72,7 +72,7 @@ function AiArticleForm() {
       <p>
         <button disabled={busy}>Write it</button>{" "}
         {tenant.ai.provider === "mock" && (
-          <span className="muted">Running in <strong>mock AI</strong> mode — choose a real provider in Settings (or set <code>ANTHROPIC_API_KEY</code>) for real articles.</span>
+          <span className="muted">Running in <strong>mock AI</strong> mode — choose a real provider in Settings (or set <code>ANTHROPIC_API_KEY</code> / <code>OPENAI_API_KEY</code>) for real articles.</span>
         )}
       </p>
     </form>
