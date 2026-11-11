@@ -112,6 +112,26 @@ CREATE TABLE IF NOT EXISTS media (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Static exports of a site pushed to a hosting provider (Netlify), newest first per tenant.
+CREATE TABLE IF NOT EXISTS site_deploys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  target TEXT NOT NULL DEFAULT 'netlify',
+  trigger TEXT NOT NULL CHECK (trigger IN ('auto','manual')),
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','succeeded','failed','skipped')),
+  site_id TEXT NOT NULL DEFAULT '',
+  deploy_id TEXT,
+  url TEXT,
+  files INTEGER NOT NULL DEFAULT 0,
+  uploaded INTEGER NOT NULL DEFAULT 0,
+  hash TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deploys_tenant ON site_deploys(tenant_id, id);
 CREATE INDEX IF NOT EXISTS idx_media_tenant ON media(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_articles_tenant_status ON articles(tenant_id, status, published_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_tenant ON ai_jobs(tenant_id, created_at);
@@ -123,6 +143,8 @@ export function openDb(file = config.dbPath): DB {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
   addColumnIfMissing(db, "tenants", "ai_api_key", "TEXT");
+  // Encrypted hosting-provider token (Netlify) for static publishing.
+  addColumnIfMissing(db, "tenants", "publish_token", "TEXT");
   // Article cover image (https URL or /media/... path) and its alt text.
   addColumnIfMissing(db, "articles", "image_url", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "articles", "image_alt", "TEXT NOT NULL DEFAULT ''");
@@ -132,6 +154,9 @@ export function openDb(file = config.dbPath): DB {
   // Jobs that were running when the process died can never finish.
   db.prepare(
     "UPDATE ai_jobs SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status IN ('queued','running')",
+  ).run();
+  db.prepare(
+    "UPDATE site_deploys SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status = 'running'",
   ).run();
   return db;
 }

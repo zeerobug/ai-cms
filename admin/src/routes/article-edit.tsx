@@ -3,7 +3,7 @@ import { useLoaderData, useNavigate, useRevalidator, type LoaderFunctionArgs } f
 import type { ArticleDetail } from "../../../src/web/admin-types";
 import { api, load, tapi } from "../api";
 import { ImagePicker, type PickedImage } from "../media";
-import { AiBadge, field, StatusBadge, useAction, useFlash, useTenant } from "../ui";
+import { AiBadge, field, MockWarning, StatusBadge, useAction, useFlash, useTenant } from "../ui";
 
 export const loader = ({ params, request }: LoaderFunctionArgs) => load<ArticleDetail>(`${tapi(params.tenant!)}/articles/${params.id}`, request);
 
@@ -69,6 +69,7 @@ export function Component() {
       <h1>
         {a.id === null ? "New article" : "Edit article"} {a.id !== null && <StatusBadge status={a.status} />} {a.source === "ai" && <AiBadge />}
       </h1>
+      {a.source === "ai" && tenant.ai.provider === "mock" && <MockWarning />}
       {a.aiPrompt && <div className="panel muted"><strong>AI prompt:</strong> {a.aiPrompt}</div>}
       {a.id !== null && a.status !== "published" && tenant.can["article.publish"] && (
         <div className="panel">

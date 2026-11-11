@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLoaderData, type LoaderFunctionArgs } from "react-router";
 import type { JobDetail } from "../../../src/web/admin-types";
 import { api, load, tapi } from "../api";
-import { useTenant } from "../ui";
+import { MockWarning, useTenant } from "../ui";
 
 export const loader = ({ params, request }: LoaderFunctionArgs) => load<JobDetail>(`${tapi(params.tenant!)}/jobs/${params.id}`, request);
 
@@ -31,6 +31,7 @@ export function Component() {
   return (
     <>
       <h1>AI {job.kind} job #{job.id}</h1>
+      {(job.usage?.some((u) => u.model === "mock") || (!done && tenant.ai.provider === "mock")) && <MockWarning />}
       <div className="panel">
         <p><strong>Request:</strong> {job.request}</p>
         {!done && <div><span className="spinner" /> Working… the AI is {{ article: "writing", theme: "designing", seo: "optimizing for search engines" }[job.kind]}. This page updates automatically.</div>}

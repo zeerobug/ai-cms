@@ -251,3 +251,42 @@ export interface SettingsInput {
   apiKey?: string;
   clearKey?: boolean;
 }
+
+// ---- static publishing (Netlify) -------------------------------------------------------
+
+export interface DeploySummary {
+  id: number;
+  trigger: "auto" | "manual";
+  status: "running" | "succeeded" | "failed" | "skipped";
+  url: string | null;
+  files: number;
+  uploaded: number;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface PublishData {
+  netlifySiteId: string;
+  auto: boolean;
+  token: { stored: boolean; masked: string | null; unreadable: boolean };
+  /** Site ID and a readable token are set. */
+  ready: boolean;
+  /** Why publishing can't run (when not ready). */
+  reason: string | null;
+  /** Public URL of the static site (from the last successful deploy). */
+  siteUrl: string | null;
+  /** A deploy is scheduled or running. */
+  busy: boolean;
+  /** Whether the current user may change the configuration (settings.manage). */
+  canConfigure: boolean;
+  deploys: DeploySummary[];
+}
+
+export interface PublishInput {
+  netlifySiteId: string;
+  auto: boolean;
+  /** New token to store; omit/empty to keep the current one. */
+  token?: string;
+  clearToken?: boolean;
+}

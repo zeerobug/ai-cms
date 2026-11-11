@@ -3,6 +3,7 @@ import { AiService, createProvider, type ProviderFactory } from "./ai/service.js
 import type { AIProvider } from "./ai/provider.js";
 import { sessionMiddleware } from "./auth.js";
 import { openDb, type DB } from "./db.js";
+import { PublishService, type NetlifyFactory } from "./publish/service.js";
 import { Repo } from "./repo.js";
 import { adminApiRouter } from "./web/admin-api.js";
 import { adminPreviewRouter } from "./web/admin-previews.js";
@@ -13,11 +14,18 @@ import { hostTenant, pathTenant, siteRouter } from "./web/site.js";
 /**
  * @param opts.adminUi serves the React admin (see web/admin-spa.ts); omitted in tests, which use
  *                     the JSON API directly.
+ * @param opts.netlify builds the Netlify client for static publishing (fakes in tests).
+ * @param opts.publishDebounceMs delay before an automatic static deploy after a change (default 10 s).
  */
-export function createApp(opts: { db?: DB; provider?: AIProvider; providerFactory?: ProviderFactory; adminUi?: RequestHandler } = {}) {
+export function createApp(
+  opts: { db?: DB; provider?: AIProvider; providerFactory?: ProviderFactory; adminUi?: RequestHandler; netlify?: NetlifyFactory; publishDebounceMs?: number } = {},
+) {
   const db = opts.db ?? openDb();
   const repo = new Repo(db);
   const ai = new AiService(repo, opts.provider ?? createProvider(), opts.providerFactory);
+  const publish = new PublishService(repo, { netlify: opts.netlify, debounceMs: opts.publishDebounceMs });
+  // Any change to a public site (from the admin, the REST API or AI jobs) can republish its static export.
+  repo.onSiteChange((tenantId) => publish.schedule(tenantId));
 
   const app = express();
   app.disable("x-powered-by");
@@ -27,7 +35,7 @@ export function createApp(opts: { db?: DB; provider?: AIProvider; providerFactor
 
   app.use("/api/v1", apiRouter(repo, ai));
   app.use("/admin", sessionMiddleware(repo));
-  app.use("/admin/api", adminApiRouter(repo, ai));
+  app.use("/admin/api", adminApiRouter(repo, ai, publish));
   app.use("/admin", adminPreviewRouter(repo));
   if (opts.adminUi) app.use(opts.adminUi);
 
@@ -43,5 +51,5 @@ export function createApp(opts: { db?: DB; provider?: AIProvider; providerFactor
   // The platform host itself (admin, /s/ paths): keep crawlers out of the admin.
   app.get("/robots.txt", (_req, res) => void res.type("text/plain").send("User-agent: *\nDisallow: /admin\n"));
 
-  return { app, repo, ai, db };
+  return { app, repo, ai, publish, db };
 }

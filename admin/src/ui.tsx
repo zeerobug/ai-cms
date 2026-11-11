@@ -83,6 +83,13 @@ export const useTenant = () => useRouteLoaderData("tenant") as TenantInfo;
 export const StatusBadge = ({ status }: { status: string }) => <span className={`badge b-${status}`}>{status}</span>;
 export const AiBadge = () => <span className="badge b-ai">AI</span>;
 
+/** Warns that content came from the offline mock AI (placeholder text, not a real model). */
+export const MockWarning = () => (
+  <div className="flash warn" role="alert">
+    ⚠️ <strong>Generated with the mock AI.</strong> This is placeholder text, not written by a real model. Choose a provider in Settings (or set an API key) to get real content.
+  </div>
+);
+
 export function RoleSelect({ name, defaultValue }: { name: string; defaultValue: Role }) {
   return (
     <select name={name} defaultValue={defaultValue}>

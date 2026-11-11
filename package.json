@@ -7,6 +7,7 @@
     "build": "vite build",
     "start": "NODE_ENV=production NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx src/server.ts",
     "seed": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx src/seed.ts",
+    "export": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx src/export.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p admin",
     "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx --test test/*.test.ts"
   },

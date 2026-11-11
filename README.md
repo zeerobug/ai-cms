@@ -69,6 +69,13 @@ A theme is JSON only: colors, fonts (from a fixed list), type scale, radius, car
 - Monthly AI image limit
 - **SEO**: let the AI fill in missing metadata when an article is published (on by default; it only fills empty fields and never changes a published URL), and a monthly limit on AI SEO jobs. The site's own SEO settings cover the home page description, the content language code (`<html lang>`) and whether search engines may index the site.
 
+### Static publishing (Netlify)
+Each site can also be published as a static site on Netlify (**Publish** tab). Create an empty site in Netlify (*Add new site → Deploy manually*). Then, as the site's owner, enter its site ID and a Netlify personal access token. The token is stored encrypted, like the sites' AI keys.
+
+- The export holds the same pages the server renders: home, articles, tag pages, RSS, `sitemap.xml`, `robots.txt`, a 404 page and the images those pages use. Canonical URLs point to the Netlify site's address (its custom domain if set).
+- With **Deploy automatically** on, every change to the public site triggers a deploy about 10 seconds later. That covers changes from the admin, the REST API and AI jobs: publishing, unpublishing, editing, themes and site settings. Deploys are skipped when the export hasn't changed (editing a draft, for example), and only changed files are uploaded. Editors can also click **Deploy now**.
+- To write the export to a folder for another host: `pnpm export <site-slug> [out-dir] --url https://blog.example.com`. Serve the folder at the root of a domain. `/a/<slug>` maps to `a/<slug>.html`, so the host must serve `.html` files for extensionless URLs, or apply the `_redirects` rules.
+
 ### Roles
 `author` can write drafts and send them for review. `editor` can also publish, edit any article and manage design. `owner` can also change settings, members and API tokens.
 

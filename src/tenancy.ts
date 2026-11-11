@@ -100,6 +100,22 @@ export const TenantSettingsSchema = z.object({
       indexing: z.boolean().default(true),
     })
     .prefault({}),
+  /**
+   * Static publishing: export the public site as static files and deploy them to Netlify.
+   * The Netlify access token is stored encrypted outside these settings (tenants.publish_token).
+   */
+  publish: z
+    .object({
+      /** Netlify site ID (API ID, a UUID) or its *.netlify.app name; '' = static publishing off. */
+      netlifySiteId: z
+        .string()
+        .trim()
+        .regex(/^([a-zA-Z0-9-]{1,100}(\.netlify\.app)?)?$/)
+        .default(""),
+      /** Redeploy automatically (debounced) whenever the public site changes. */
+      auto: z.boolean().default(true),
+    })
+    .prefault({}),
 });
 export type TenantSettings = z.infer<typeof TenantSettingsSchema>;
 

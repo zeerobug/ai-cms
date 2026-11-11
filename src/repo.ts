@@ -21,11 +21,15 @@ export interface TenantRow {
   active_theme_id: number | null;
   /** Encrypted per-tenant LLM API key (see util/secrets.ts). Never leaves the repo/AI service. */
   ai_api_key: string | null;
+  /** Encrypted hosting-provider token for static publishing. Never leaves the repo/publish service. */
+  publish_token: string | null;
 }
-export interface Tenant extends Omit<TenantRow, "settings" | "ai_api_key"> {
+export interface Tenant extends Omit<TenantRow, "settings" | "ai_api_key" | "publish_token"> {
   settings: TenantSettings;
   /** Whether the tenant has its own LLM API key stored. */
   hasAiKey: boolean;
+  /** Whether the tenant has a hosting-provider token stored for static publishing. */
+  hasPublishToken: boolean;
 }
 export interface UserRow {
   id: number;
@@ -94,6 +98,26 @@ export interface MediaRow {
 }
 const MEDIA_COLS = "id, tenant_id, file, mime, size, alt, source, prompt, created_at";
 
+/** One static export pushed to a hosting provider. */
+export interface DeployRow {
+  id: number;
+  tenant_id: number;
+  user_id: number | null;
+  target: "netlify";
+  trigger: "auto" | "manual";
+  status: "running" | "succeeded" | "failed" | "skipped";
+  site_id: string;
+  deploy_id: string | null;
+  url: string | null;
+  files: number;
+  uploaded: number;
+  /** Fingerprint of the exported file set (to skip deploys that would change nothing). */
+  hash: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
 /** Cover image of an article. */
 export interface ArticleImage {
   url: string;
@@ -103,12 +127,33 @@ export interface ArticleImage {
 export class Repo {
   constructor(public db: DB) {}
 
+  // ---- change notifications ------------------------------------------------
+
+  private listeners: ((tenantId: number) => void)[] = [];
+  /**
+   * Called after any write that may change a tenant's public site (articles, themes, site
+   * settings, media). Used to republish static exports; drafts trigger it too, so listeners
+   * must tolerate no-op changes.
+   */
+  onSiteChange(fn: (tenantId: number) => void) {
+    this.listeners.push(fn);
+  }
+  private changed(tenantId: number) {
+    for (const fn of this.listeners) {
+      try {
+        fn(tenantId);
+      } catch (e) {
+        console.error("[repo] site change listener failed", e);
+      }
+    }
+  }
+
   // ---- tenants -------------------------------------------------------------
 
   private hydrate(row: TenantRow | undefined): Tenant | undefined {
     if (!row) return undefined;
-    const { ai_api_key, settings, ...rest } = row;
-    return { ...rest, settings: parseSettings(settings), hasAiKey: !!ai_api_key };
+    const { ai_api_key, publish_token, settings, ...rest } = row;
+    return { ...rest, settings: parseSettings(settings), hasAiKey: !!ai_api_key, hasPublishToken: !!publish_token };
   }
   tenantBySlug(slug: string) {
     return this.hydrate(one<TenantRow>(this.db, "SELECT * FROM tenants WHERE slug = ?", slug));
@@ -137,6 +182,7 @@ export class Repo {
 
   updateTenantSettings(id: number, settings: TenantSettings) {
     run(this.db, "UPDATE tenants SET settings = ? WHERE id = ?", JSON.stringify(settings), id);
+    this.changed(id);
   }
 
   updateTenant(id: number, patch: { name: string; tagline: string; domain: string | null; settings: TenantSettings }) {
@@ -149,6 +195,7 @@ export class Repo {
       JSON.stringify(patch.settings),
       id,
     );
+    this.changed(id);
   }
 
   /** Encrypted API key for the tenant's LLM provider, or null. */
@@ -159,8 +206,16 @@ export class Repo {
     run(this.db, "UPDATE tenants SET ai_api_key = ? WHERE id = ?", encrypted, tenantId);
   }
 
+  /** Encrypted hosting-provider token for static publishing, or null. */
+  tenantPublishToken(tenantId: number): string | null {
+    return one<{ publish_token: string | null }>(this.db, "SELECT publish_token FROM tenants WHERE id = ?", tenantId)?.publish_token ?? null;
+  }
+  setTenantPublishToken(tenantId: number, encrypted: string | null) {
+    run(this.db, "UPDATE tenants SET publish_token = ? WHERE id = ?", encrypted, tenantId);
+  }
+
   tenantsForUser(userId: number) {
-    return all<Omit<TenantRow, "ai_api_key"> & { role: Role }>(
+    return all<Omit<TenantRow, "ai_api_key" | "publish_token"> & { role: Role }>(
       this.db,
       "SELECT t.id, t.slug, t.name, t.tagline, t.domain, t.settings, t.active_theme_id, m.role FROM tenants t JOIN memberships m ON m.tenant_id = t.id WHERE m.user_id = ? ORDER BY t.name",
       userId,
@@ -271,6 +326,7 @@ export class Repo {
   }
   updateTheme(tenantId: number, id: number, spec: ThemeSpec) {
     run(this.db, "UPDATE themes SET name = ?, spec = ? WHERE tenant_id = ? AND id = ?", spec.name, JSON.stringify(spec), tenantId, id);
+    this.changed(tenantId);
   }
   theme(tenantId: number, id: number) {
     return one<ThemeRow>(this.db, "SELECT * FROM themes WHERE tenant_id = ? AND id = ?", tenantId, id);
@@ -283,6 +339,7 @@ export class Repo {
   }
   activateTheme(tenantId: number, id: number) {
     run(this.db, "UPDATE tenants SET active_theme_id = ? WHERE id = ?", id, tenantId);
+    this.changed(tenantId);
   }
   themeSpec(row: ThemeRow | undefined): ThemeSpec {
     if (!row) return DEFAULT_THEME;
@@ -347,6 +404,7 @@ export class Repo {
       a.image?.url ?? "",
       a.image?.alt ?? "",
     );
+    this.changed(tenantId);
     return Number(r.lastInsertRowid);
   }
 
@@ -388,6 +446,7 @@ export class Repo {
       tenantId,
       id,
     );
+    this.changed(tenantId);
   }
 
   /** Updates only the SEO metadata of an article (alt text lives in the blocks and the cover). */
@@ -410,6 +469,7 @@ export class Repo {
       tenantId,
       id,
     );
+    this.changed(tenantId);
   }
 
   /** The SEO-relevant fields of an article (see content/seo.ts). */
@@ -446,9 +506,11 @@ export class Repo {
       tenantId,
       id,
     );
+    this.changed(tenantId);
   }
   deleteArticle(tenantId: number, id: number) {
     run(this.db, "DELETE FROM articles WHERE tenant_id = ? AND id = ?", tenantId, id);
+    this.changed(tenantId);
   }
   article(tenantId: number, id: number) {
     return one<ArticleRow>(this.db, "SELECT * FROM articles WHERE tenant_id = ? AND id = ?", tenantId, id);
@@ -546,6 +608,11 @@ export class Repo {
   }
   deleteMedia(tenantId: number, id: number) {
     run(this.db, "DELETE FROM media WHERE tenant_id = ? AND id = ?", tenantId, id);
+    this.changed(tenantId);
+  }
+  /** Bytes of one of the tenant's media files (for static exports). */
+  mediaData(tenantId: number, file: string) {
+    return one<{ mime: string; data: Uint8Array }>(this.db, "SELECT mime, data FROM media WHERE tenant_id = ? AND file = ?", tenantId, file);
   }
   /** AI-generated image prompt for one of the tenant's media files, used as context for alt text. */
   mediaPrompt(tenantId: number, file: string) {
@@ -605,6 +672,56 @@ export class Repo {
       payload.error ?? null,
       payload.usage === undefined ? null : JSON.stringify(payload.usage),
       id,
+    );
+  }
+
+  // ---- static deploys --------------------------------------------------------
+
+  createDeploy(tenantId: number, d: { userId: number | null; trigger: DeployRow["trigger"]; siteId: string }) {
+    const r = run(
+      this.db,
+      "INSERT INTO site_deploys (tenant_id, user_id, trigger, site_id) VALUES (?, ?, ?, ?)",
+      tenantId,
+      d.userId,
+      d.trigger,
+      d.siteId,
+    );
+    return Number(r.lastInsertRowid);
+  }
+  /** Records the outcome of a deploy. Its id comes from createDeploy (same tenant). */
+  finishDeploy(
+    tenantId: number,
+    id: number,
+    p: { status: Exclude<DeployRow["status"], "running">; deployId?: string | null; url?: string | null; files?: number; uploaded?: number; hash?: string | null; error?: string | null },
+  ) {
+    run(
+      this.db,
+      `UPDATE site_deploys SET status = ?, deploy_id = ?, url = ?, files = ?, uploaded = ?, hash = ?, error = ?, finished_at = datetime('now')
+       WHERE tenant_id = ? AND id = ?`,
+      p.status,
+      p.deployId ?? null,
+      p.url ?? null,
+      p.files ?? 0,
+      p.uploaded ?? 0,
+      p.hash ?? null,
+      p.error ?? null,
+      tenantId,
+      id,
+    );
+  }
+  deploy(tenantId: number, id: number) {
+    return one<DeployRow>(this.db, "SELECT * FROM site_deploys WHERE tenant_id = ? AND id = ?", tenantId, id);
+  }
+  deploys(tenantId: number, limit = 10) {
+    return all<DeployRow>(this.db, "SELECT * FROM site_deploys WHERE tenant_id = ? ORDER BY id DESC LIMIT ?", tenantId, limit);
+  }
+  /** Last successful deploy to the given site (its hash tells whether a new export changes anything). */
+  lastSucceededDeploy(tenantId: number, siteId: string) {
+    return one<DeployRow>(
+      this.db,
+      "SELECT * FROM site_deploys WHERE tenant_id = ? AND site_id = ? AND status = 'succeeded' ORDER BY id DESC LIMIT 1",
+      tenantId,
+      siteId,
     );
   }
 }

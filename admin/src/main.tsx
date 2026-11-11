@@ -36,6 +36,7 @@ const router = createBrowserRouter(
             { path: "jobs/:id", lazy: () => import("./routes/job") },
             { path: "design", lazy: () => import("./routes/design") },
             { path: "design/:id", lazy: () => import("./routes/theme-edit") },
+            { path: "publish", lazy: () => import("./routes/publish") },
             { path: "settings", lazy: () => import("./routes/settings") },
           ],
         },
@@ -113,6 +114,7 @@ function TenantNav({ slug }: { slug: string }) {
       <NavLink to={`/${slug}`} end className={cls}>Dashboard</NavLink>
       <NavLink to={`/${slug}/articles`} className={cls}>Articles</NavLink>
       <NavLink to={`/${slug}/design`} className={cls}>Design</NavLink>
+      {tenant.can["article.publish"] && <NavLink to={`/${slug}/publish`} className={cls}>Publish</NavLink>}
       {tenant.can["settings.manage"] && <NavLink to={`/${slug}/settings`} className={cls}>Settings</NavLink>}
       <a href={`/s/${slug}`} target="_blank" rel="noreferrer">View site ↗</a>
       <span className="muted" style={{ color: "#9aa" }}>{tenant.role}</span>

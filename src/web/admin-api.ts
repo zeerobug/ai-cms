@@ -6,7 +6,8 @@ import { csrfToken as csrfFor, hashPassword, SESSION_COOKIE, setSessionCookie, v
 import { blocksToMarkdown, markdownToBlocks, slugify } from "../content/blocks.js";
 import { isImageUrl, MAX_IMAGE_BYTES, mediaUrl, sniffImage } from "../content/media.js";
 import { seoGaps } from "../content/seo.js";
-import { safeJson, type ArticleImage, type ArticleRow, type JobRow, type MediaRow, type Repo, type Tenant } from "../repo.js";
+import { PublishError, type PublishService } from "../publish/service.js";
+import { safeJson, type ArticleImage, type ArticleRow, type DeployRow, type JobRow, type MediaRow, type Repo, type Tenant } from "../repo.js";
 import { AI_PROVIDERS, atLeast, can, ROLES, TenantSettingsSchema, type Role } from "../tenancy.js";
 import { MAX_PALETTE_INPUT, paletteToColors, parsePalette } from "../themes/palette.js";
 import { normalizeTheme } from "../themes/spec.js";
@@ -18,10 +19,13 @@ import {
   type ArticleInput,
   type ArticleSummary,
   type Dashboard,
+  type DeploySummary,
   type JobDetail,
   type JobSummary,
   type MediaItem,
   type Permission,
+  type PublishData,
+  type PublishInput,
   type SessionInfo,
   type SettingsData,
   type SettingsInput,
@@ -63,7 +67,7 @@ export const PROVIDER_LABELS: Record<(typeof AI_PROVIDERS)[number], string> = {
  * Mutations must be `application/json` (blocks cross-site form posts) and carry `X-CSRF-Token`
  * once logged in (enforced by sessionMiddleware).
  */
-export function adminApiRouter(repo: Repo, ai: AiService) {
+export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishService) {
   const r = express.Router();
   const articleSummary = makeArticleSummary(repo);
 
@@ -474,7 +478,8 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
   t.put("/settings", need("settings.manage"), (req, res) => {
     const tn = tenantOf(res);
     const b = (req.body ?? {}) as Partial<SettingsInput>;
-    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai, seo: b.seo ?? tn.settings.seo });
+    // Static publishing has its own endpoint (PUT /publish); keep its settings as they are.
+    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai, seo: b.seo ?? tn.settings.seo, publish: tn.settings.publish });
     if (!parsed.success) throw new HttpError(400, "Invalid settings: " + parsed.error.issues.map((i) => i.path.join(".")).join(", "));
     const domain = str(b.domain).trim().toLowerCase() || null;
     if (domain) {
@@ -487,6 +492,55 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     if (apiKey) repo.setTenantAiKey(tn.id, encryptSecret(apiKey));
     else if (b.clearKey === true) repo.setTenantAiKey(tn.id, null);
     res.json({ message: "Settings saved." });
+  });
+
+  // ---- static publishing (Netlify) -------------------------------------------
+
+  /** Anyone who can publish articles can see deploys and redeploy; only owners change the configuration. */
+  t.get("/publish", need("article.publish"), (_req, res) => {
+    const tn = tenantOf(res);
+    const stored = repo.tenantPublishToken(tn.id);
+    const plain = stored ? decryptSecret(stored) : null;
+    const ready = publish.readiness(tn);
+    const deploys = repo.deploys(tn.id, 15);
+    const last = tn.settings.publish.netlifySiteId ? repo.lastSucceededDeploy(tn.id, tn.settings.publish.netlifySiteId) : undefined;
+    const body: PublishData = {
+      netlifySiteId: tn.settings.publish.netlifySiteId,
+      auto: tn.settings.publish.auto,
+      token: { stored: !!stored, masked: plain ? maskSecret(plain) : null, unreadable: !!stored && !plain },
+      ready: ready.ok,
+      reason: ready.ok ? null : ready.reason,
+      siteUrl: last?.url ?? null,
+      busy: publish.isBusy(tn.id) || deploys.some((d) => d.status === "running"),
+      canConfigure: can(roleOf(res), "settings.manage"),
+      deploys: deploys.map(deploySummary),
+    };
+    res.json(body);
+  });
+
+  t.put("/publish", need("settings.manage"), (req, res) => {
+    const tn = tenantOf(res);
+    const b = (req.body ?? {}) as Partial<PublishInput>;
+    const parsed = TenantSettingsSchema.shape.publish.safeParse({ netlifySiteId: str(b.netlifySiteId), auto: b.auto === true });
+    if (!parsed.success) throw new HttpError(400, "That doesn't look like a Netlify site ID (use the API ID from Site configuration, or the site's name).");
+    const token = str(b.token).trim();
+    if (token && (token.length > 500 || /\s/.test(token))) throw new HttpError(400, "That Netlify token doesn't look valid.");
+    // Store the token first: saving settings notifies listeners, which may schedule a deploy.
+    if (token) repo.setTenantPublishToken(tn.id, encryptSecret(token));
+    else if (b.clearToken === true) repo.setTenantPublishToken(tn.id, null);
+    repo.updateTenantSettings(tn.id, { ...tn.settings, publish: parsed.data });
+    const ready = publish.readiness(repo.tenantById(tn.id)!);
+    const message = !ready.ok
+      ? "Publishing settings saved."
+      : parsed.data.auto
+        ? "Publishing settings saved. The site will be deployed to Netlify shortly, and again after every change."
+        : "Publishing settings saved. Use “Deploy now” to publish.";
+    res.json({ message });
+  });
+
+  t.post("/publish/deploy", need("article.publish"), (_req, res) => {
+    const id = publish.requestDeploy(tenantOf(res), res.locals.user!.id);
+    res.status(202).json({ deployId: id, message: "Deploy started." });
   });
 
   const roleParam = (v: unknown): Role => ROLES.find((r) => r === v) ?? "author";
@@ -528,7 +582,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
 
   r.use((_req, _res, next) => next(new HttpError(404, "Not found.")));
   r.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError || err instanceof PolicyError) return void res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError || err instanceof PolicyError || err instanceof PublishError) return void res.status(err.status).json({ error: err.message });
     if (err instanceof ZodError) return void res.status(400).json({ error: "Please check the form: " + err.issues.map((i) => i.message).join("; ") });
     if ((err as { type?: string })?.type === "entity.too.large")
       return void res.status(413).json({ error: `That file is too large (${MAX_IMAGE_BYTES / 1024 / 1024} MB max).` });
@@ -591,6 +645,18 @@ function jobRequest(j: JobRow) {
 }
 
 const jobSummary = (j: JobRow): JobSummary => ({ id: j.id, kind: j.kind, request: jobRequest(j).slice(0, 120), status: j.status, error: j.error, createdAt: j.created_at });
+
+const deploySummary = (d: DeployRow): DeploySummary => ({
+  id: d.id,
+  trigger: d.trigger,
+  status: d.status,
+  url: d.url,
+  files: d.files,
+  uploaded: d.uploaded,
+  error: d.error,
+  createdAt: d.created_at,
+  finishedAt: d.finished_at,
+});
 
 function readArticle(body: Partial<ArticleInput> | undefined, role: Role) {
   const b = body ?? {};

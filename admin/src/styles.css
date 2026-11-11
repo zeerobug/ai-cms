@@ -20,8 +20,9 @@ table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:.55rem .
 th{font-size:.75rem;text-transform:uppercase;color:#6b7080;letter-spacing:.04em}
 .badge{display:inline-block;font-size:.72rem;padding:.1rem .5rem;border-radius:99px;background:#e9ecf3;font-weight:600}
 .b-published,.b-succeeded{background:#d3f9d8;color:#2b8a3e}.b-review,.b-running,.b-queued{background:#fff3bf;color:#a06000}
-.b-draft{background:#e9ecf3}.b-failed{background:#ffe3e3;color:#c92a2a}.b-ai{background:#f3d9fa;color:#862e9c}
+.b-draft,.b-skipped{background:#e9ecf3}.b-failed{background:#ffe3e3;color:#c92a2a}.b-ai{background:#f3d9fa;color:#862e9c}
 .flash{background:#e7f5ff;border:1px solid #a5d8ff;padding:.7rem 1rem;border-radius:8px;margin-bottom:1rem}
+.warn{background:#fff9db;border-color:#ffe066}
 .err{background:#fff5f5;border-color:#ffc9c9}
 .muted{color:#6b7080;font-size:.85rem}.inline{display:inline}
 .themes{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:1rem}
