@@ -73,6 +73,31 @@ export const TenantSettingsSchema = z.object({
           monthlyLimit: z.number().int().min(0).default(50),
         })
         .prefault({}),
+      seo: z
+        .object({
+          /**
+           * When an article is published with SEO metadata missing (search title, meta description,
+           * image alt text, tags), let the AI fill in the gaps. Never overwrites what's already there.
+           */
+          autoOptimize: z.boolean().default(true),
+          /** Max AI SEO jobs per calendar month (0 = unlimited). A bulk run counts as one job. */
+          monthlyLimit: z.number().int().min(0).default(200),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+  /** Search-engine settings for the public site (used by the renderer, sitemap and robots.txt). */
+  seo: z
+    .object({
+      /** Home page meta description ('' = use the tagline). The AI can write it. */
+      description: z.string().max(300).default(""),
+      /** BCP 47 language code of the site's content, for <html lang> and structured data. */
+      lang: z
+        .string()
+        .regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/)
+        .default("en"),
+      /** Allow search engines to index the site (off = robots.txt disallows all + noindex). */
+      indexing: z.boolean().default(true),
     })
     .prefault({}),
 });

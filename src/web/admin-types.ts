@@ -9,6 +9,7 @@ export type ArticleStatus = "draft" | "review" | "published";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ArticleLength = "short" | "medium" | "long";
+export type JobKind = "article" | "theme" | "seo";
 
 export const ROLE_LIST: readonly Role[] = ["author", "editor", "owner"];
 export const PERMISSION_LIST = [
@@ -54,6 +55,8 @@ export interface TenantInfo {
     imageProvider: string | null;
     defaultTone: string;
     defaultLength: ArticleLength;
+    /** AI fills in missing SEO metadata when an article is published. */
+    seoAuto: boolean;
   };
 }
 
@@ -63,11 +66,13 @@ export interface ArticleSummary {
   status: ArticleStatus;
   source: "human" | "ai";
   updatedAt: string;
+  /** Published but missing search-engine metadata (title, description, tags or alt text). */
+  seoMissing: boolean;
 }
 
 export interface JobSummary {
   id: number;
-  kind: "article" | "theme";
+  kind: JobKind;
   request: string;
   status: JobStatus;
   error: string | null;
@@ -85,6 +90,8 @@ export interface ArticleDetail {
   title: string;
   slug: string;
   summary: string;
+  /** Title tag for search results ('' = the title). */
+  seoTitle: string;
   seoDescription: string;
   tags: string[];
   status: ArticleStatus;
@@ -105,6 +112,7 @@ export interface ArticleInput {
   title: string;
   slug?: string;
   summary?: string;
+  seoTitle?: string;
   seoDescription?: string;
   markdown: string;
   tags?: string[] | string;
@@ -136,7 +144,7 @@ export interface ImageGenerateInput {
 
 export interface JobDetail {
   id: number;
-  kind: "article" | "theme";
+  kind: JobKind;
   status: JobStatus;
   request: string;
   result: {
@@ -147,6 +155,14 @@ export interface JobDetail {
     themeId?: number | null;
     applied?: boolean;
     imageUrl?: string | null;
+    /** SEO jobs: what changed, the keyword chosen, and advice for the editor. */
+    changed?: string[];
+    focusKeyword?: string;
+    suggestions?: string[];
+    /** Site SEO job: the new home page description. */
+    description?: string;
+    /** Bulk SEO job: how many articles were updated. */
+    optimized?: number;
   } | null;
   error: string | null;
   usage: { model: string; inputTokens: number; outputTokens: number }[] | null;
@@ -187,13 +203,35 @@ export interface AiSettings {
   };
   themes: { autoApply: boolean; minRoleToAutoApply: Role };
   images: { monthlyLimit: number };
+  seo: { autoOptimize: boolean; monthlyLimit: number };
 }
+
+/** Search-engine settings of the public site. */
+export interface SeoSettings {
+  /** Home page meta description ('' = the tagline). */
+  description: string;
+  /** BCP 47 language code, e.g. "en", "fr-CA". */
+  lang: string;
+  indexing: boolean;
+}
+
+/** POST /t/:tenant/ai/seo */
+export type SeoRequestInput =
+  | { target: "article"; articleId: number; mode?: "fill" | "replace" }
+  | { target: "articles" }
+  | { target: "site" };
 
 export interface SettingsData {
   name: string;
   tagline: string;
   domain: string | null;
   ai: AiSettings;
+  seo: SeoSettings;
+  /** Public URLs of the sitemap and robots.txt. */
+  sitemapUrl: string;
+  robotsUrl: string;
+  /** Published articles missing SEO metadata. */
+  seoMissing: number;
   /** Provider choices: "default" plus concrete providers. */
   providers: { value: string; label: string }[];
   platformProvider: string;
@@ -208,6 +246,7 @@ export interface SettingsInput {
   tagline: string;
   domain: string | null;
   ai: AiSettings;
+  seo: SeoSettings;
   /** New key to store; omit/empty to keep the current one. */
   apiKey?: string;
   clearKey?: boolean;

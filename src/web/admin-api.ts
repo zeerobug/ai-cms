@@ -5,11 +5,13 @@ import { PolicyError, type AiService } from "../ai/service.js";
 import { csrfToken as csrfFor, hashPassword, SESSION_COOKIE, setSessionCookie, verifyPassword } from "../auth.js";
 import { blocksToMarkdown, markdownToBlocks, slugify } from "../content/blocks.js";
 import { isImageUrl, MAX_IMAGE_BYTES, mediaUrl, sniffImage } from "../content/media.js";
+import { seoGaps } from "../content/seo.js";
 import { safeJson, type ArticleImage, type ArticleRow, type JobRow, type MediaRow, type Repo, type Tenant } from "../repo.js";
 import { AI_PROVIDERS, atLeast, can, ROLES, TenantSettingsSchema, type Role } from "../tenancy.js";
 import { MAX_PALETTE_INPUT, paletteToColors, parsePalette } from "../themes/palette.js";
 import { normalizeTheme } from "../themes/spec.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../util/secrets.js";
+import { requestOrigin, siteInfo } from "./site.js";
 import {
   PERMISSION_LIST,
   type ArticleDetail,
@@ -23,6 +25,7 @@ import {
   type SessionInfo,
   type SettingsData,
   type SettingsInput,
+  type SeoRequestInput,
   type SiteSummary,
   type TenantInfo,
   type ThemeDetail,
@@ -62,6 +65,7 @@ export const PROVIDER_LABELS: Record<(typeof AI_PROVIDERS)[number], string> = {
  */
 export function adminApiRouter(repo: Repo, ai: AiService) {
   const r = express.Router();
+  const articleSummary = makeArticleSummary(repo);
 
   r.use((req, _res, next) => {
     // HTML forms can only POST, so requiring JSON on POST/PUT blocks cross-site form submissions.
@@ -201,6 +205,28 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     res.status(202).json({ jobId });
   });
 
+  /**
+   * Body: SeoRequestInput. An article needs edit rights on it; a bulk run needs editAny; the home page
+   * description is a site setting (settings.manage).
+   */
+  t.post("/ai/seo", (req, res) => {
+    const b = (req.body ?? {}) as { target?: unknown; articleId?: unknown; mode?: unknown };
+    const tn = tenantOf(res);
+    let input: SeoRequestInput;
+    if (b.target === "article") {
+      const a = findArticle(res, b.articleId);
+      if (!canEditArticle(res, a)) throw new HttpError(403, "You can't edit this article.");
+      input = { target: "article", articleId: a.id, mode: b.mode === "fill" ? "fill" : "replace" };
+    } else if (b.target === "articles") {
+      if (!can(roleOf(res), "article.editAny")) throw new HttpError(403, `Your role (${roleOf(res)}) can't do that.`);
+      input = { target: "articles" };
+    } else if (b.target === "site") {
+      if (!can(roleOf(res), "settings.manage")) throw new HttpError(403, `Your role (${roleOf(res)}) can't do that.`);
+      input = { target: "site" };
+    } else throw new HttpError(400, "target must be article, articles or site.");
+    res.status(202).json({ jobId: ai.requestSeo(tn, actor(res), input) });
+  });
+
   t.get("/jobs/:id", (req, res) => {
     const job = repo.job(tenantOf(res).id, num(req.params.id));
     if (!job) throw new HttpError(404, "Job not found.");
@@ -232,7 +258,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     };
     if (req.params.id === "new") {
       if (!can(role, "article.create")) throw new HttpError(403, "Your role can't create articles.");
-      const body: ArticleDetail = { id: null, title: "", slug: "", summary: "", seoDescription: "", tags: [], status: "draft", source: "human", aiPrompt: null, themeId: null, imageUrl: "", imageAlt: "", markdown: "", editable: true, ...base };
+      const body: ArticleDetail = { id: null, title: "", slug: "", summary: "", seoTitle: "", seoDescription: "", tags: [], status: "draft", source: "human", aiPrompt: null, themeId: null, imageUrl: "", imageAlt: "", markdown: "", editable: true, ...base };
       return void res.json(body);
     }
     const a = findArticle(res, req.params.id);
@@ -242,6 +268,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
       title: a.title,
       slug: a.slug,
       summary: a.summary,
+      seoTitle: a.seo_title,
       seoDescription: a.seo_description,
       tags: view.tags,
       status: a.status,
@@ -260,13 +287,17 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
   t.post("/articles", need("article.create"), (req, res) => {
     const tn = tenantOf(res);
     const id = repo.createArticle(tn.id, { ...readArticle(req.body, roleOf(res)), source: "human", authorId: res.locals.user!.id });
+    ai.autoSeo(tn, actor(res), id);
     res.status(201).json({ id });
   });
 
   t.put("/articles/:id", (req, res) => {
     const a = findArticle(res, req.params.id);
     if (!canEditArticle(res, a)) throw new HttpError(403, "You can't edit this article.");
-    repo.updateArticle(tenantOf(res).id, a.id, readArticle(req.body, roleOf(res)));
+    const input = readArticle(req.body, roleOf(res));
+    repo.updateArticle(tenantOf(res).id, a.id, input);
+    // Only on the transition to published: an editor who later clears a field on purpose isn't overridden.
+    if (a.status !== "published" && input.status === "published") ai.autoSeo(tenantOf(res), actor(res), a.id);
     res.json({ id: a.id });
   });
 
@@ -278,6 +309,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     const allowed = status === "published" ? can(role, "article.publish") : canEditArticle(res, a) || can(role, "article.publish");
     if (!allowed) throw new HttpError(403, "Your role can't do that.");
     repo.setArticleStatus(tenantOf(res).id, a.id, status);
+    if (a.status !== "published" && status === "published") ai.autoSeo(tenantOf(res), actor(res), a.id);
     res.json({ id: a.id, status });
   });
 
@@ -412,8 +444,9 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
 
   // ---- settings, members, tokens ------------------------------------------
 
-  t.get("/settings", need("settings.manage"), (_req, res) => {
+  t.get("/settings", need("settings.manage"), (req, res) => {
     const tn = tenantOf(res);
+    const siteUrl = siteInfo(tn, `/s/${tn.slug}`, requestOrigin(req)).url;
     const stored = repo.tenantAiKey(tn.id);
     const plain = stored ? decryptSecret(stored) : null;
     const body: SettingsData = {
@@ -421,6 +454,10 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
       tagline: tn.tagline,
       domain: tn.domain,
       ai: tn.settings.ai,
+      seo: tn.settings.seo,
+      sitemapUrl: `${siteUrl}/sitemap.xml`,
+      robotsUrl: `${siteUrl}/robots.txt`,
+      seoMissing: ai.articlesNeedingSeo(tn, 1000).length,
       providers: [
         { value: "default", label: `Platform default (${ai.provider.name})` },
         ...AI_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABELS[p] })),
@@ -437,7 +474,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
   t.put("/settings", need("settings.manage"), (req, res) => {
     const tn = tenantOf(res);
     const b = (req.body ?? {}) as Partial<SettingsInput>;
-    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai });
+    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai, seo: b.seo ?? tn.settings.seo });
     if (!parsed.success) throw new HttpError(400, "Invalid settings: " + parsed.error.issues.map((i) => i.path.join(".")).join(", "));
     const domain = str(b.domain).trim().toLowerCase() || null;
     if (domain) {
@@ -522,6 +559,7 @@ export function tenantInfo(tn: Tenant, role: Role, ai: AiService): TenantInfo {
       imageProvider: ai.imageProviderNameFor(tn),
       defaultTone: s.articles.defaultTone,
       defaultLength: s.articles.defaultLength,
+      seoAuto: s.seo.autoOptimize,
     },
   };
 }
@@ -536,11 +574,20 @@ const mediaItemFor = (tn: Tenant, m: MediaRow): MediaItem => ({
   createdAt: m.created_at,
 });
 
-const articleSummary = (a: ArticleRow): ArticleSummary => ({ id: a.id, title: a.title, status: a.status, source: a.source, updatedAt: a.updated_at });
+function makeArticleSummary(repo: Repo) {
+  return (a: ArticleRow): ArticleSummary => ({
+    id: a.id,
+    title: a.title,
+    status: a.status,
+    source: a.source,
+    updatedAt: a.updated_at,
+    seoMissing: a.status === "published" && seoGaps(repo.seoFields(a)).length > 0,
+  });
+}
 
 function jobRequest(j: JobRow) {
   const input = safeJson<Record<string, unknown>>(j.input, {});
-  return String(input.topic ?? input.prompt ?? "");
+  return String(input.topic ?? input.prompt ?? input.label ?? "");
 }
 
 const jobSummary = (j: JobRow): JobSummary => ({ id: j.id, kind: j.kind, request: jobRequest(j).slice(0, 120), status: j.status, error: j.error, createdAt: j.created_at });
@@ -557,6 +604,7 @@ function readArticle(body: Partial<ArticleInput> | undefined, role: Role) {
     title: str(b.title).trim() || "Untitled",
     slug: str(b.slug).trim(),
     summary: str(b.summary),
+    seoTitle: str(b.seoTitle).trim().slice(0, 200),
     seoDescription: str(b.seoDescription),
     blocks: markdownToBlocks(str(b.markdown)),
     tags,

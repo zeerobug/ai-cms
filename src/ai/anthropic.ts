@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { z } from "zod";
 import { AiThemeSchema } from "../themes/spec.js";
-import { ARTICLE_SYSTEM, articleUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
+import { ARTICLE_SYSTEM, articleUserPrompt, SEO_SYSTEM, seoUserPrompt, siteSeoUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
 import {
   AiRefusalError,
   ArticleDraftSchema,
@@ -10,6 +10,10 @@ import {
   type AiResult,
   type ArticleRequest,
   type Effort,
+  SeoDraftSchema,
+  type SeoRequest,
+  SiteSeoSchema,
+  type SiteSeoRequest,
   type ThemeRequest,
 } from "./provider.js";
 
@@ -31,6 +35,14 @@ export class AnthropicProvider implements AIProvider {
 
   async designTheme(req: ThemeRequest) {
     return this.structured(THEME_SYSTEM, themeUserPrompt(req), AiThemeSchema, req.model, req.effort);
+  }
+
+  async optimizeSeo(req: SeoRequest) {
+    return this.structured(SEO_SYSTEM, seoUserPrompt(req), SeoDraftSchema, req.model, req.effort);
+  }
+
+  async optimizeSiteSeo(req: SiteSeoRequest) {
+    return this.structured(SEO_SYSTEM, siteSeoUserPrompt(req), SiteSeoSchema, req.model, req.effort);
   }
 
   private async structured<S extends z.ZodType>(

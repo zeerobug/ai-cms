@@ -2,9 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { z } from "zod";
 import { config } from "../config.js";
+import { blocksToMarkdown } from "../content/blocks.js";
 import { IMAGE_ASPECTS, mediaUrl, sniffImage, type ImageAspect } from "../content/media.js";
+import { cleanMeta, SEO_LIMITS, seoGaps, seoPatch, type SeoMode } from "../content/seo.js";
 import type { ArticleImage, MediaRow, Repo, Tenant } from "../repo.js";
-import { aiArticlePublishDecision, aiThemeApplyDecision, atLeast, type AiProviderName, type Role } from "../tenancy.js";
+import { aiArticlePublishDecision, aiThemeApplyDecision, atLeast, parseSettings, type AiProviderName, type Role } from "../tenancy.js";
 import { describePalette, parsePalette, type Palette } from "../themes/palette.js";
 import { normalizeTheme } from "../themes/spec.js";
 import { decryptSecret } from "../util/secrets.js";
@@ -58,6 +60,17 @@ export const ImageJobInput = z.object({
   alt: z.string().max(300).optional(),
 });
 export type ImageJobInput = z.input<typeof ImageJobInput>;
+
+export const SeoJobInput = z.discriminatedUnion("target", [
+  /** One article. "replace" rewrites its metadata; "fill" only fills empty fields. */
+  z.object({ target: z.literal("article"), articleId: z.number().int().positive(), mode: z.enum(["fill", "replace"]).optional().default("replace") }),
+  /** Every published article with missing metadata (fill mode), up to MAX_BULK_SEO per run. */
+  z.object({ target: z.literal("articles") }),
+  /** The home page meta description (stored in the site's SEO settings). */
+  z.object({ target: z.literal("site") }),
+]);
+export type SeoJobInput = z.input<typeof SeoJobInput>;
+const MAX_BULK_SEO = 50;
 
 /** Providers that implement generateImage (Claude only writes text). */
 const IMAGE_PROVIDERS = new Set(["openai", "mock"]);
@@ -211,6 +224,62 @@ export class AiService {
     return jobId;
   }
 
+  private assertSeoQuota(t: Tenant) {
+    const limit = t.settings.ai.seo.monthlyLimit;
+    if (limit > 0 && this.repo.aiJobsThisMonth(t.id, "seo") >= limit) throw new PolicyError(`Monthly AI SEO limit (${limit}) reached.`, 429);
+  }
+
+  /** Published articles that are missing SEO metadata. */
+  articlesNeedingSeo(t: Tenant, limit = MAX_BULK_SEO) {
+    return this.repo
+      .articles(t.id, { status: "published", limit: 1000 })
+      .filter((a) => seoGaps(this.repo.seoFields(a)).length)
+      .slice(0, limit);
+  }
+
+  /**
+   * Queue an SEO job. Callers check who may change the target (editing the article, editAny for
+   * bulk runs, settings.manage for the site); this checks the site's AI policy and quota.
+   */
+  requestSeo(t: Tenant, actor: Actor, rawInput: SeoJobInput): number {
+    this.assertCanGenerate(t, actor);
+    const input = SeoJobInput.parse(rawInput);
+    let label: string;
+    if (input.target === "article") {
+      const a = this.repo.article(t.id, input.articleId);
+      if (!a) throw new PolicyError("Article not found.", 404);
+      label = `SEO for “${a.title}”`;
+    } else if (input.target === "articles") {
+      const n = this.articlesNeedingSeo(t).length;
+      if (!n) throw new PolicyError("Every published article already has its SEO metadata.", 409);
+      label = `SEO for ${n} published article${n === 1 ? "" : "s"} with missing metadata`;
+    } else {
+      label = "SEO for the home page";
+    }
+    this.assertSeoQuota(t);
+    const provider = this.providerFor(t);
+    const jobId = this.repo.createJob(t.id, actor.userId, "seo", { ...input, label });
+    this.start(jobId, () => this.runSeo(t, provider, input));
+    return jobId;
+  }
+
+  /**
+   * Called when an article gets published: if it lacks SEO metadata and the site allows it, queue a
+   * "fill" job. Best effort: returns the job id, or null when skipped (policy, quota, nothing missing).
+   */
+  autoSeo(t: Tenant, actor: Actor, articleId: number): number | null {
+    if (!t.settings.ai.enabled || !t.settings.ai.seo.autoOptimize) return null;
+    const a = this.repo.article(t.id, articleId);
+    if (!a || a.status !== "published" || !seoGaps(this.repo.seoFields(a)).length) return null;
+    if (this.repo.seoJobPending(t.id, articleId)) return null;
+    try {
+      return this.requestSeo(t, actor, { target: "article", articleId, mode: "fill" });
+    } catch (err) {
+      if (!(err instanceof PolicyError)) console.error("[ai] auto SEO skipped:", err);
+      return null;
+    }
+  }
+
   private start(jobId: number, fn: () => Promise<{ result: unknown; usage: Usage[] }>) {
     const p = (async () => {
       this.repo.setJobRunning(jobId);
@@ -279,8 +348,10 @@ export class AiService {
     const status = decision.publish ? "published" : input.publish ? "review" : "draft";
     const articleId = this.repo.createArticle(t.id, {
       title: draft.value.title,
+      slug: draft.value.slug,
       summary: draft.value.summary,
-      seoDescription: draft.value.seoDescription,
+      seoTitle: cleanMeta(draft.value.seoTitle, SEO_LIMITS.title),
+      seoDescription: cleanMeta(draft.value.seoDescription, SEO_LIMITS.description),
       blocks: draft.value.blocks,
       tags: draft.value.tags,
       status,
@@ -323,5 +394,98 @@ export class AiService {
     const decision = aiThemeApplyDecision(t.settings, actor.role, input.apply);
     if (decision.apply) this.repo.activateTheme(t.id, themeId);
     return { result: { themeId, applied: decision.apply, message: decision.reason + imageNote }, usage };
+  }
+
+  private async runSeo(t: Tenant, provider: AIProvider, input: z.output<typeof SeoJobInput>) {
+    if (input.target === "site") return this.runSiteSeo(t, provider);
+    if (input.target === "article") {
+      const r = await this.optimizeArticle(t, provider, input.articleId, input.mode);
+      const message = r.changed.length ? `Updated ${r.changed.join(", ")}.` : "The SEO metadata was already complete; nothing changed.";
+      return { result: { message, articleId: input.articleId, slug: r.slug, changed: r.changed, focusKeyword: r.focusKeyword, suggestions: r.suggestions }, usage: r.usage };
+    }
+    // Bulk: one article at a time; a failure on one article doesn't stop the others.
+    const usage: Usage[] = [];
+    let optimized = 0;
+    const failures: string[] = [];
+    for (const a of this.articlesNeedingSeo(t)) {
+      try {
+        const r = await this.optimizeArticle(t, provider, a.id, "fill");
+        usage.push(...r.usage);
+        if (r.changed.length) optimized++;
+      } catch (err) {
+        failures.push(`“${a.title}”: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (!optimized && failures.length) throw new Error(`SEO failed for every article. ${failures[0]}`);
+    const message = `Filled in missing SEO metadata on ${optimized} article${optimized === 1 ? "" : "s"}.` + (failures.length ? ` Failed: ${failures.join("; ")}` : "");
+    return { result: { message, optimized }, usage };
+  }
+
+  private async optimizeArticle(t: Tenant, provider: AIProvider, articleId: number, mode: SeoMode) {
+    const row = this.repo.article(t.id, articleId);
+    if (!row) throw new Error("The article no longer exists.");
+    const view = this.repo.toView(row);
+    const s = t.settings.ai;
+
+    // The model can't see images: give it what we know about each (AI prompt, caption, current alt).
+    const mediaPrefix = `/media/${t.slug}/`;
+    const promptFor = (url: string) => (url.startsWith(mediaPrefix) ? this.repo.mediaPrompt(t.id, url.slice(mediaPrefix.length)) : null);
+    const images = new Map<string, string[]>();
+    const addImage = (url: string, ...hints: (string | null)[]) => {
+      const ctx = images.get(url) ?? [];
+      for (const h of hints) if (h?.trim()) ctx.push(h.trim());
+      images.set(url, ctx);
+    };
+    if (view.image) addImage(view.image.url, "Cover image of the article.", promptFor(view.image.url) && `Generated from: ${promptFor(view.image.url)}`, view.image.alt && `Current alt: ${view.image.alt}`);
+    for (const b of view.blocks) {
+      if (b.type === "image") addImage(b.url, promptFor(b.url) && `Generated from: ${promptFor(b.url)}`, b.caption && `Caption: ${b.caption}`, b.alt && `Current alt: ${b.alt}`);
+    }
+
+    const others = this.repo.articles(t.id, { status: "published", limit: 30 }).filter((a) => a.id !== row.id).map((a) => a.title);
+    const res = await provider.optimizeSeo({
+      site: { name: t.name, tagline: t.tagline },
+      language: s.articles.language,
+      article: { title: row.title, summary: row.summary, tags: view.tags, markdown: blocksToMarkdown(view.blocks) },
+      images: [...images].map(([url, ctx]) => ({ url, context: ctx.join(" ") })),
+      otherTitles: others,
+      siteTags: this.repo.publishedTags(t.id).slice(0, 60),
+      model: s.model,
+      effort: s.effort,
+    });
+
+    // Re-read after the (slow) AI call and patch only the SEO fields, so edits made meanwhile survive.
+    const fresh = this.repo.article(t.id, articleId);
+    if (!fresh) throw new Error("The article was deleted while the AI was working.");
+    const patch = seoPatch(this.repo.seoFields(fresh), res.value, mode);
+    if (patch.changed.length) this.repo.updateArticleSeo(t.id, articleId, patch);
+    return {
+      changed: patch.changed,
+      slug: this.repo.article(t.id, articleId)!.slug,
+      focusKeyword: cleanMeta(res.value.focusKeyword, 100),
+      suggestions: res.value.suggestions.map((x) => cleanMeta(x, 400)).filter(Boolean).slice(0, 5),
+      usage: [res.usage],
+    };
+  }
+
+  private async runSiteSeo(t: Tenant, provider: AIProvider) {
+    const s = t.settings.ai;
+    const res = await provider.optimizeSiteSeo({
+      site: { name: t.name, tagline: t.tagline },
+      language: s.articles.language,
+      currentDescription: t.settings.seo.description,
+      recentTitles: this.repo.articles(t.id, { status: "published", limit: 30 }).map((a) => a.title),
+      siteTags: this.repo.publishedTags(t.id).slice(0, 60),
+      model: s.model,
+      effort: s.effort,
+    });
+    const description = cleanMeta(res.value.description, SEO_LIMITS.description);
+    if (!description) throw new Error("The AI returned an empty description.");
+    // Settings may have been edited while the AI worked: change only this one field.
+    const fresh = this.repo.tenantById(t.id);
+    if (!fresh) throw new Error("The site no longer exists.");
+    const settings = parseSettings(JSON.stringify({ ...fresh.settings, seo: { ...fresh.settings.seo, description } }));
+    this.repo.updateTenantSettings(t.id, settings);
+    const suggestions = res.value.suggestions.map((x) => cleanMeta(x, 400)).filter(Boolean).slice(0, 5);
+    return { result: { message: "Home page description updated.", description, suggestions }, usage: [res.usage] };
   }
 }

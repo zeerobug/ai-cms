@@ -3,7 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import type { z } from "zod";
 import { config } from "../config.js";
 import { AiThemeSchema } from "../themes/spec.js";
-import { ARTICLE_SYSTEM, articleUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
+import { ARTICLE_SYSTEM, articleUserPrompt, SEO_SYSTEM, seoUserPrompt, siteSeoUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
 import {
   AiRefusalError,
   ArticleDraftSchema,
@@ -11,6 +11,10 @@ import {
   type AiResult,
   type ArticleRequest,
   type Effort,
+  SeoDraftSchema,
+  type SeoRequest,
+  SiteSeoSchema,
+  type SiteSeoRequest,
   type GeneratedImage,
   type ImageRequest,
   type ThemeRequest,
@@ -41,6 +45,14 @@ export class OpenAIProvider implements AIProvider {
 
   async designTheme(req: ThemeRequest) {
     return this.structured(THEME_SYSTEM, themeUserPrompt(req), AiThemeSchema, "theme", req.model, req.effort);
+  }
+
+  async optimizeSeo(req: SeoRequest) {
+    return this.structured(SEO_SYSTEM, seoUserPrompt(req), SeoDraftSchema, "seo", req.model, req.effort);
+  }
+
+  async optimizeSiteSeo(req: SiteSeoRequest) {
+    return this.structured(SEO_SYSTEM, siteSeoUserPrompt(req), SiteSeoSchema, "site_seo", req.model, req.effort);
   }
 
   async generateImage(req: ImageRequest): Promise<AiResult<GeneratedImage>> {

@@ -1,6 +1,6 @@
 import { describePalette } from "../themes/palette.js";
 import { FONTS } from "../themes/spec.js";
-import type { ArticleRequest, ThemeRequest } from "./provider.js";
+import type { ArticleRequest, SeoRequest, SiteSeoRequest, ThemeRequest } from "./provider.js";
 
 // Prompts shared by every LLM provider, so all backends get the same instructions.
 
@@ -23,7 +23,15 @@ Writing rules:
 - Inline formatting allowed in text fields: **bold**, *italic*, \`code\`, [link](https://...). No HTML.
 - Only use "image" blocks if the request supplies image URLs; never make up image URLs.
 - Do not repeat the title as the first block. End with a short concluding section or takeaway.
-- Match the requested language, tone and length.`;
+- Match the requested language, tone and length.
+
+Search engine optimization:
+- Pick the main search phrase a reader would type to find this article and use it naturally in the title,
+  the first paragraph and at least one section heading. Never keyword-stuff; write for people first.
+- Make section headings descriptive (they become the outline search engines read), not clever.
+- seoTitle: at most 55 characters, main phrase near the start; the site name is appended automatically.
+- seoDescription: 120-155 characters, an accurate summary that includes the main phrase and invites the click.
+- slug: 3-6 lowercase words joined by hyphens, containing the main phrase.`;
 
 export const THEME_SYSTEM = `You are a senior web designer. You design the look and feel of a website by filling in a
 theme specification for a fixed template system. You cannot write HTML or CSS; every visual decision is
@@ -50,6 +58,25 @@ What the fields do:
 
 Start from the current theme and change what the request implies; a request about one aspect (e.g.
 "make it darker") should leave unrelated choices alone. Give the theme a short evocative name.`;
+
+export const SEO_SYSTEM = `You are an SEO editor for a website running on a content management system. You write the
+search-engine metadata for existing content: title tags, meta descriptions, URL slugs, tags and image alt text.
+
+Rules:
+- Base everything on what the content actually says. Never promise what it doesn't deliver, and never
+  invent facts, numbers, prices or claims.
+- Choose one focus keyword: the phrase a real reader would search for to find this content.
+- seoTitle: at most 55 characters (the site name is appended automatically), focus keyword near the start,
+  specific and distinct from the site's other titles. No clickbait, no ALL CAPS, no quotes around it.
+- seoDescription: 120-155 characters, one or two plain sentences that include the focus keyword.
+- slug: 3-6 lowercase words joined by hyphens, containing the focus keyword; no stop-word padding, no dates.
+- tags: 3-5 short lowercase topics; prefer tags the site already uses when they fit.
+- Alt text: describe what each image shows (you can't see it; infer from the context given: its generation
+  prompt, caption, current alt text and the article). Be concrete and under 125 characters. Don't start with
+  "Image of" or "Picture of". Return one entry per listed image, using its exact URL.
+- suggestions: concrete edits to the content itself that would help it rank (e.g. a missing section readers
+  search for, a heading that should name the topic, an intro that buries the point). Skip generic advice.
+- Write the metadata in the requested language.`;
 
 // Image prompts (sent to the image model; Claude itself doesn't generate images).
 
@@ -93,6 +120,42 @@ export function themeUserPrompt(req: ThemeRequest): string {
         `palette colors sensible roles (typically the most saturated as primary/accent). You may derive tints or ` +
         `shades of palette colors for background, surface, muted and border when needed for readability and contrast.`,
     `Design request: ${req.prompt}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+const MAX_SEO_BODY = 20_000;
+
+export function seoUserPrompt(req: SeoRequest): string {
+  const body = req.article.markdown.length > MAX_SEO_BODY ? req.article.markdown.slice(0, MAX_SEO_BODY) + "\n\n[…truncated]" : req.article.markdown;
+  return [
+    `Website: ${req.site.name}${req.site.tagline ? ` — ${req.site.tagline}` : ""}`,
+    `Language: ${req.language}`,
+    req.siteTags.length && `Tags already used on the site: ${req.siteTags.join(", ")}`,
+    req.otherTitles.length && `Other articles on the site:\n${req.otherTitles.map((t) => `- ${t}`).join("\n")}`,
+    req.images.length
+      ? `Images that need alt text:\n${req.images.map((i) => `- URL: ${i.url}\n  Context: ${i.context || "(none)"}`).join("\n")}`
+      : "The article has no images (return an empty imageAlts list).",
+    `Article title: ${req.article.title}`,
+    req.article.summary && `Summary: ${req.article.summary}`,
+    req.article.tags.length && `Current tags: ${req.article.tags.join(", ")}`,
+    `Article body (Markdown):\n${body}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function siteSeoUserPrompt(req: SiteSeoRequest): string {
+  return [
+    `Website: ${req.site.name}${req.site.tagline ? ` — ${req.site.tagline}` : ""}`,
+    `Language: ${req.language}`,
+    req.currentDescription && `Current home page description: ${req.currentDescription}`,
+    req.siteTags.length && `Topics (tags) on the site: ${req.siteTags.join(", ")}`,
+    req.recentTitles.length
+      ? `Recent articles:\n${req.recentTitles.map((t) => `- ${t}`).join("\n")}`
+      : "The site has no published articles yet.",
+    "Write the search-engine metadata for the home page of this website.",
   ]
     .filter(Boolean)
     .join("\n\n");

@@ -33,7 +33,7 @@ export function Component() {
       <h1>AI {job.kind} job #{job.id}</h1>
       <div className="panel">
         <p><strong>Request:</strong> {job.request}</p>
-        {!done && <div><span className="spinner" /> Working… the AI is {job.kind === "article" ? "writing" : "designing"}. This page updates automatically.</div>}
+        {!done && <div><span className="spinner" /> Working… the AI is {{ article: "writing", theme: "designing", seo: "optimizing for search engines" }[job.kind]}. This page updates automatically.</div>}
         {job.status === "failed" && (
           <>
             <p>❌ {job.error || "Failed"}</p>
@@ -43,6 +43,14 @@ export function Component() {
         {job.status === "succeeded" && r && (
           <>
             <p>✅ {r.message}</p>
+            {r.focusKeyword && <p><strong>Focus keyword:</strong> {r.focusKeyword}</p>}
+            {r.description && <p><strong>Home page description:</strong> {r.description}</p>}
+            {!!r.suggestions?.length && (
+              <div className="panel">
+                <strong>Suggestions from the AI</strong> <span className="muted">(not applied: edit the content if you agree)</span>
+                <ul>{r.suggestions.map((x, i) => <li key={i}>{x}</li>)}</ul>
+              </div>
+            )}
             <div className="actions">
               {r.articleId && (
                 <>
@@ -50,6 +58,8 @@ export function Component() {
                   <a className="btn sec" href={`/admin${base}/articles/${r.articleId}/preview`} target="_blank" rel="noreferrer">Preview</a>
                 </>
               )}
+              {job.kind === "seo" && r.description !== undefined && <Link className="btn sec" to={`${base}/settings`}>Go to Settings</Link>}
+              {job.kind === "seo" && r.optimized !== undefined && <Link className="btn sec" to={`${base}/articles?status=published`}>Published articles</Link>}
               {r.themeId && (
                 <>
                   <a className="btn sec" href={`/admin${base}/design/${r.themeId}/preview`} target="_blank" rel="noreferrer">Preview design</a>

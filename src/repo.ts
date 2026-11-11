@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { BlocksSchema, slugify, type Block } from "./content/blocks.js";
 import type { ImageType } from "./content/media.js";
+import type { SeoFields } from "./content/seo.js";
 import { all, one, run, type DB } from "./db.js";
 import { parseSettings, type Role, type TenantSettings } from "./tenancy.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, type ThemeSpec } from "./themes/spec.js";
@@ -40,6 +41,8 @@ export interface ArticleRow {
   title: string;
   summary: string;
   seo_description: string;
+  /** Title tag for search results ('' = the article title). */
+  seo_title: string;
   blocks: string;
   tags: string;
   status: "draft" | "review" | "published";
@@ -67,7 +70,7 @@ export interface JobRow {
   id: number;
   tenant_id: number;
   user_id: number | null;
-  kind: "article" | "theme";
+  kind: "article" | "theme" | "seo";
   input: string;
   status: "queued" | "running" | "succeeded" | "failed";
   result: string | null;
@@ -130,6 +133,10 @@ export class Repo {
     run(this.db, "UPDATE tenants SET active_theme_id = ? WHERE id = ?", first, tenantId);
     if (input.ownerId) this.setMembership(input.ownerId, tenantId, "owner");
     return this.tenantById(tenantId)!;
+  }
+
+  updateTenantSettings(id: number, settings: TenantSettings) {
+    run(this.db, "UPDATE tenants SET settings = ? WHERE id = ?", JSON.stringify(settings), id);
   }
 
   updateTenant(id: number, patch: { name: string; tagline: string; domain: string | null; settings: TenantSettings }) {
@@ -307,6 +314,7 @@ export class Repo {
       title: string;
       slug?: string;
       summary?: string;
+      seoTitle?: string;
       seoDescription?: string;
       blocks: Block[];
       tags?: string[];
@@ -321,12 +329,13 @@ export class Repo {
     const slug = this.uniqueSlug(tenantId, a.slug || a.title);
     const r = run(
       this.db,
-      `INSERT INTO articles (tenant_id, slug, title, summary, seo_description, blocks, tags, status, source, ai_prompt, theme_id, author_id, image_url, image_alt, published_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${a.status === "published" ? "datetime('now')" : "NULL"})`,
+      `INSERT INTO articles (tenant_id, slug, title, summary, seo_title, seo_description, blocks, tags, status, source, ai_prompt, theme_id, author_id, image_url, image_alt, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${a.status === "published" ? "datetime('now')" : "NULL"})`,
       tenantId,
       slug,
       a.title,
       a.summary ?? "",
+      a.seoTitle ?? "",
       a.seoDescription ?? "",
       JSON.stringify(a.blocks),
       JSON.stringify(normalizeTags(a.tags ?? [])),
@@ -348,6 +357,7 @@ export class Repo {
       title: string;
       slug: string;
       summary: string;
+      seoTitle: string;
       seoDescription: string;
       blocks: Block[];
       tags: string[];
@@ -359,13 +369,14 @@ export class Repo {
     const slug = this.uniqueSlug(tenantId, a.slug || a.title, id);
     run(
       this.db,
-      `UPDATE articles SET title = ?, slug = ?, summary = ?, seo_description = ?, blocks = ?, tags = ?, status = ?, theme_id = ?, image_url = ?, image_alt = ?,
+      `UPDATE articles SET title = ?, slug = ?, summary = ?, seo_title = ?, seo_description = ?, blocks = ?, tags = ?, status = ?, theme_id = ?, image_url = ?, image_alt = ?,
          published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE NULL END,
          updated_at = datetime('now')
        WHERE tenant_id = ? AND id = ?`,
       a.title,
       slug,
       a.summary,
+      a.seoTitle,
       a.seoDescription,
       JSON.stringify(a.blocks),
       JSON.stringify(normalizeTags(a.tags)),
@@ -377,6 +388,52 @@ export class Repo {
       tenantId,
       id,
     );
+  }
+
+  /** Updates only the SEO metadata of an article (alt text lives in the blocks and the cover). */
+  updateArticleSeo(
+    tenantId: number,
+    id: number,
+    p: { seoTitle: string; seoDescription: string; tags: string[]; slug: string; imageAlt: string; blocks: Block[] },
+  ) {
+    const slug = this.uniqueSlug(tenantId, p.slug, id);
+    run(
+      this.db,
+      `UPDATE articles SET seo_title = ?, seo_description = ?, tags = ?, slug = ?, image_alt = ?, blocks = ?, updated_at = datetime('now')
+       WHERE tenant_id = ? AND id = ?`,
+      p.seoTitle,
+      p.seoDescription,
+      JSON.stringify(normalizeTags(p.tags)),
+      slug,
+      p.imageAlt,
+      JSON.stringify(p.blocks),
+      tenantId,
+      id,
+    );
+  }
+
+  /** The SEO-relevant fields of an article (see content/seo.ts). */
+  seoFields(row: ArticleRow): SeoFields {
+    const v = this.toView(row);
+    return {
+      status: row.status,
+      slug: row.slug,
+      seoTitle: row.seo_title,
+      seoDescription: row.seo_description,
+      tags: v.tags,
+      imageUrl: row.image_url,
+      imageAlt: row.image_alt,
+      blocks: v.blocks,
+    };
+  }
+
+  /** Every tag used by published articles (for the sitemap). */
+  publishedTags(tenantId: number) {
+    return all<{ value: string }>(
+      this.db,
+      "SELECT DISTINCT j.value FROM articles a, json_each(a.tags) j WHERE a.tenant_id = ? AND a.status = 'published' ORDER BY j.value",
+      tenantId,
+    ).map((r) => r.value);
   }
 
   setArticleStatus(tenantId: number, id: number, status: ArticleRow["status"]) {
@@ -439,10 +496,12 @@ export class Repo {
       slug: row.slug,
       title: row.title,
       summary: row.summary,
+      seoTitle: row.seo_title,
       seoDescription: row.seo_description,
       blocks,
       tags: safeJson<string[]>(row.tags, []),
       publishedAt: row.published_at,
+      updatedAt: row.updated_at,
       source: row.source,
       image: row.image_url ? { url: row.image_url, alt: row.image_alt } : null,
     };
@@ -488,6 +547,10 @@ export class Repo {
   deleteMedia(tenantId: number, id: number) {
     run(this.db, "DELETE FROM media WHERE tenant_id = ? AND id = ?", tenantId, id);
   }
+  /** AI-generated image prompt for one of the tenant's media files, used as context for alt text. */
+  mediaPrompt(tenantId: number, file: string) {
+    return one<{ prompt: string | null }>(this.db, "SELECT prompt FROM media WHERE tenant_id = ? AND file = ?", tenantId, file)?.prompt ?? null;
+  }
   aiImagesThisMonth(tenantId: number) {
     return (
       one<{ n: number }>(
@@ -509,6 +572,26 @@ export class Repo {
   }
   jobs(tenantId: number, limit = 20) {
     return all<JobRow>(this.db, "SELECT * FROM ai_jobs WHERE tenant_id = ? ORDER BY id DESC LIMIT ?", tenantId, limit);
+  }
+  aiJobsThisMonth(tenantId: number, kind: JobRow["kind"]) {
+    return (
+      one<{ n: number }>(
+        this.db,
+        "SELECT COUNT(*) AS n FROM ai_jobs WHERE tenant_id = ? AND kind = ? AND status != 'failed' AND created_at >= datetime('now', 'start of month')",
+        tenantId,
+        kind,
+      )?.n ?? 0
+    );
+  }
+  /** Whether an SEO job for this article (or a bulk run) is queued or running. */
+  seoJobPending(tenantId: number, articleId: number) {
+    return !!one(
+      this.db,
+      `SELECT 1 FROM ai_jobs WHERE tenant_id = ? AND kind = 'seo' AND status IN ('queued','running')
+         AND (json_extract(input, '$.articleId') = ? OR json_extract(input, '$.target') = 'articles')`,
+      tenantId,
+      articleId,
+    );
   }
   setJobRunning(id: number) {
     run(this.db, "UPDATE ai_jobs SET status = 'running' WHERE id = ?", id);

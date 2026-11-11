@@ -1,8 +1,8 @@
 import zlib from "node:zlib";
-import type { Block } from "../content/blocks.js";
+import { markdownToBlocks, plainText, slugify, type Block } from "../content/blocks.js";
 import { paletteToColors } from "../themes/palette.js";
 import type { AiTheme } from "../themes/spec.js";
-import type { AIProvider, ArticleDraft, ArticleRequest, ImageRequest, ThemeRequest } from "./provider.js";
+import type { AIProvider, ArticleDraft, ArticleRequest, ImageRequest, SeoDraft, SeoRequest, SiteSeo, SiteSeoRequest, ThemeRequest } from "./provider.js";
 
 /**
  * Deterministic, offline stand-in for the real model. Used for demos without an API key
@@ -42,7 +42,9 @@ export class MockProvider implements AIProvider {
     const value: ArticleDraft = {
       title: `A practical guide to ${topic}`,
       summary: `Everything you need to know about ${topic}, without the jargon.`,
+      seoTitle: `${Topic}: a practical guide`.slice(0, 55),
       seoDescription: `A clear, practical guide to ${topic}.`.slice(0, 155),
+      slug: slugify(`${topic} guide`),
       tags: topic
         .toLowerCase()
         .split(/\W+/)
@@ -95,6 +97,38 @@ export class MockProvider implements AIProvider {
     if (/sidebar|docs|documentation/.test(p)) theme.layout.article = "sidebar";
 
     return { value: theme, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
+  }
+
+  async optimizeSeo(req: SeoRequest) {
+    await sleep(this.delayMs);
+    const { title, summary, markdown } = req.article;
+    const blocks = markdownToBlocks(markdown);
+    const words = title.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+    const keyword = words.slice(0, 3).join(" ") || title.toLowerCase();
+    const text = summary || plainText(blocks);
+    const suggestions: string[] = [];
+    if (!blocks.some((b) => b.type === "heading")) suggestions.push("Add section headings that name the topic so readers and search engines can scan the article.");
+    if (plainText(blocks).split(/\s+/).length < 300) suggestions.push(`Expand the article: cover the questions people search for about ${keyword}.`);
+    const value: SeoDraft = {
+      focusKeyword: keyword,
+      seoTitle: title.slice(0, 55),
+      seoDescription: (text || `Read ${title} on ${req.site.name}.`).replace(/\s+/g, " ").slice(0, 155),
+      slug: slugify(keyword),
+      tags: req.article.tags.length ? req.article.tags : words.slice(0, 3),
+      imageAlts: req.images.map((i, n) => ({ url: i.url, alt: n === 0 ? `Illustration for “${title}”` : `Image ${n + 1} in “${title}”` })),
+      suggestions,
+    };
+    return { value, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
+  }
+
+  async optimizeSiteSeo(req: SiteSeoRequest) {
+    await sleep(this.delayMs);
+    const topics = req.siteTags.slice(0, 3).join(", ");
+    const value: SiteSeo = {
+      description: `${req.site.name}${req.site.tagline ? `: ${req.site.tagline}` : ""}. ${topics ? `Articles about ${topics}.` : "Articles, guides and news."}`.slice(0, 155),
+      suggestions: req.recentTitles.length < 5 ? ["Publish more articles so search engines have more pages to rank."] : [],
+    };
+    return { value, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
   }
 
   /** A gradient PNG whose colors are derived from the prompt (same prompt → same image). */

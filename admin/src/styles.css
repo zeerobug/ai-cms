@@ -56,3 +56,9 @@ label.btn.file{margin:0;font-weight:600}label.btn.file.disabled{opacity:.6;point
 .cover-preview{display:grid;grid-template-columns:minmax(0,240px) 1fr;gap:1rem;align-items:start;margin:.3rem 0}
 .cover-preview img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid #e3e5ea}
 .cover-preview label{margin-top:0}
+.badge.seo-missing{background:#fff3cd;color:#7a5b00}
+.seo-fields{background:#f8f9fc;margin:.75rem 0}
+.counted{position:relative}
+.counted input{padding-right:4.2rem}
+.counted .count{position:absolute;right:.6rem;top:50%;transform:translateY(-50%);font-size:.75rem;color:#8a90a0}
+.counted .count.over{color:#c0392b;font-weight:600}

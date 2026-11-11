@@ -7,7 +7,13 @@ import { OpenAIProvider } from "../src/ai/openai.js";
 import { AiRefusalError } from "../src/ai/provider.js";
 import { blocksToMarkdown, markdownToBlocks, renderBlocks, renderInline } from "../src/content/blocks.js";
 import { aiArticlePublishDecision, aiThemeApplyDecision, TenantSettingsSchema } from "../src/tenancy.js";
-import { renderArticle, renderHome } from "../src/themes/render.js";
+import { renderArticle, renderHome, renderRobots, renderSitemap, type ArticleView } from "../src/themes/render.js";
+import { cleanMeta, seoGaps, seoPatch, type SeoFields } from "../src/content/seo.js";
+import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDb } from "../src/db.js";
 import { MockProvider } from "../src/ai/mock.js";
 import { isImageUrl, sniffImage } from "../src/content/media.js";
 import { config } from "../src/config.js";
@@ -263,7 +269,7 @@ test("hero and cover images render; unsafe hero URLs are dropped", () => {
   assert.equal(injected.hero.imageUrl, "");
   assert.equal(injected.hero.style, "gradient");
 
-  const article = { slug: "a", title: "T", summary: "", seoDescription: "", blocks: [], tags: [], publishedAt: null, source: "human" as const, image: { url: media, alt: 'A "quoted" lighthouse' } };
+  const article = { slug: "a", title: "T", summary: "", seoTitle: "", seoDescription: "", blocks: [], tags: [], publishedAt: null, updatedAt: "2026-01-01 00:00:00", source: "human" as const, image: { url: media, alt: 'A "quoted" lighthouse' } };
   const home = renderHome({ name: "S", tagline: "", base: "" }, DEFAULT_THEME, [article]);
   assert.ok(home.includes(`<img class="card-img" src="${media}"`));
   const page = renderArticle({ name: "S", tagline: "", base: "" }, DEFAULT_THEME, article);
@@ -287,4 +293,165 @@ test("OpenAIProvider generates images with the configured image model and size",
   assert.equal(p.model, config.openaiImageModel);
   assert.equal(p.size, "1024x1536");
   assert.equal(p.prompt, "a fox");
+});
+
+// ---------------------------------------------------------------------------
+// SEO
+// ---------------------------------------------------------------------------
+
+test("cleanMeta collapses whitespace and cuts at a word boundary", () => {
+  assert.equal(cleanMeta("  a\n\tb  ", 10), "a b");
+  const cut = cleanMeta("The quick brown fox jumps over the lazy dog", 20);
+  assert.ok(cut.length <= 20 && !cut.endsWith(" "));
+  assert.equal(cut, "The quick brown fox");
+});
+
+const seoBase: SeoFields = {
+  status: "published",
+  slug: "old-slug",
+  seoTitle: "",
+  seoDescription: "Written by a human",
+  tags: [],
+  imageUrl: "/media/x/cover.png",
+  imageAlt: "",
+  blocks: [
+    { type: "paragraph", text: "Hi" },
+    { type: "image", url: "https://img.example/a.jpg", alt: "kept", caption: "" },
+    { type: "image", url: "https://img.example/b.jpg", alt: "", caption: "" },
+  ],
+};
+const suggestion = {
+  seoTitle: "  New   title  ",
+  seoDescription: "AI description",
+  slug: "Better Slug!",
+  tags: ["Sourdough Bread", "baking"],
+  imageAlts: [
+    { url: "/media/x/cover.png", alt: "A loaf" },
+    { url: "https://img.example/a.jpg", alt: "AI alt a" },
+    { url: "https://img.example/b.jpg", alt: "AI alt b" },
+  ],
+};
+
+test("seoGaps lists missing metadata", () => {
+  assert.deepEqual(seoGaps(seoBase), ["title", "tags", "alt"]);
+  const complete = seoPatch(seoBase, suggestion, "fill");
+  assert.deepEqual(seoGaps({ ...seoBase, ...complete }), []);
+});
+
+test("seoPatch fill mode only fills empty fields and never touches published slugs", () => {
+  const p = seoPatch(seoBase, suggestion, "fill");
+  assert.equal(p.seoTitle, "New title");
+  assert.equal(p.seoDescription, "Written by a human");
+  assert.deepEqual(p.tags, ["sourdough-bread", "baking"]);
+  assert.equal(p.slug, "old-slug");
+  assert.equal(p.imageAlt, "A loaf");
+  assert.equal((p.blocks[1] as { alt: string }).alt, "kept");
+  assert.equal((p.blocks[2] as { alt: string }).alt, "AI alt b");
+  assert.deepEqual(p.changed, ["search title", "tags", "alt text (2 images)"]);
+});
+
+test("seoPatch replace mode rewrites metadata; slug only changes before publishing", () => {
+  const live = seoPatch(seoBase, suggestion, "replace");
+  assert.equal(live.seoDescription, "AI description");
+  assert.equal((live.blocks[1] as { alt: string }).alt, "AI alt a");
+  assert.equal(live.slug, "old-slug");
+  const draft = seoPatch({ ...seoBase, status: "draft" }, suggestion, "replace");
+  assert.equal(draft.slug, "better-slug");
+  // Over-long AI output is clamped.
+  const long = seoPatch(seoBase, { ...suggestion, seoDescription: "word ".repeat(100) }, "replace");
+  assert.ok(long.seoDescription.length <= 160);
+});
+
+const seoSite = { name: "Bakery", tagline: "Bread notes", base: "/s/bakery", url: "https://bakery.example", lang: "fr", description: "Home description" };
+const seoArticle: ArticleView = {
+  slug: "pain",
+  title: "Pain </script><script>alert(1)</script>",
+  summary: "Sum",
+  seoTitle: "Pain au levain maison",
+  seoDescription: "Desc",
+  blocks: [{ type: "paragraph", text: "one two three" }],
+  tags: ["bread"],
+  publishedAt: "2026-03-01 10:00:00",
+  updatedAt: "2026-03-02 10:00:00",
+  source: "human",
+  image: { url: "/media/bakery/c.png", alt: "Loaf" },
+};
+
+test("article pages carry canonical, Open Graph and safe JSON-LD", () => {
+  const page = renderArticle(seoSite, DEFAULT_THEME, seoArticle);
+  assert.ok(page.includes('<html lang="fr">'));
+  assert.ok(page.includes("<title>Pain au levain maison · Bakery</title>"));
+  assert.ok(page.includes('<link rel="canonical" href="https://bakery.example/a/pain">'));
+  assert.ok(page.includes('<meta property="og:image" content="https://bakery.example/media/bakery/c.png">'));
+  assert.ok(page.includes('<meta name="twitter:card" content="summary_large_image">'));
+  assert.ok(page.includes('<meta property="article:published_time" content="2026-03-01T10:00:00.000Z">'));
+  assert.ok(!page.includes('name="robots"'));
+  const scripts = [...page.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map((m) => JSON.parse(m[1]));
+  assert.equal(scripts.length, 2);
+  assert.equal(scripts[0]["@type"], "BlogPosting");
+  assert.equal(scripts[0].mainEntityOfPage, "https://bakery.example/a/pain");
+  assert.equal(scripts[0].wordCount, 3);
+  assert.equal(scripts[1]["@type"], "BreadcrumbList");
+  assert.equal(scripts[1].itemListElement[1].name, seoArticle.title, "title survives the escaping");
+  assert.ok(!page.includes("<script>alert(1)"), "no script injection through JSON-LD");
+
+  const hidden = renderArticle({ ...seoSite, indexable: false }, DEFAULT_THEME, seoArticle);
+  assert.ok(hidden.includes('<meta name="robots" content="noindex">'));
+  const home = renderHome(seoSite, DEFAULT_THEME, [seoArticle]);
+  assert.ok(home.includes('<meta name="description" content="Home description">'));
+  assert.ok(home.includes('<link rel="canonical" href="https://bakery.example/">'));
+  assert.ok(home.includes('"@type":"WebSite"'));
+});
+
+test("sitemap lists canonical URLs; robots.txt points to it or blocks everything", () => {
+  const xml = renderSitemap(seoSite, [seoArticle], ["bread", "a&b"]);
+  assert.ok(xml.includes("<loc>https://bakery.example/</loc><lastmod>2026-03-02T10:00:00.000Z</lastmod>"));
+  assert.ok(xml.includes("<loc>https://bakery.example/a/pain</loc>"));
+  assert.ok(xml.includes("<loc>https://bakery.example/tag/a%26b</loc>"));
+  assert.equal(renderRobots(seoSite), "User-agent: *\nAllow: /\n\nSitemap: https://bakery.example/sitemap.xml\n");
+  assert.equal(renderRobots({ ...seoSite, indexable: false }), "User-agent: *\nDisallow: /\n");
+});
+
+test("openDb upgrades an old ai_jobs table so it accepts SEO jobs, keeping existing rows", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aicms-"));
+  const file = path.join(dir, "old.sqlite");
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE tenants (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
+    INSERT INTO tenants (slug, name) VALUES ('t', 'T');
+    CREATE TABLE ai_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      user_id INTEGER, kind TEXT NOT NULL CHECK (kind IN ('article','theme')), input TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
+      result TEXT, error TEXT, usage TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT);
+    INSERT INTO ai_jobs (tenant_id, kind, input, status) VALUES (1, 'article', '{}', 'succeeded');`);
+  old.close();
+  const db = openDb(file);
+  try {
+    db.prepare("INSERT INTO ai_jobs (tenant_id, kind, input) VALUES (1, 'seo', '{}')").run();
+    const kinds = db.prepare("SELECT kind FROM ai_jobs ORDER BY id").all().map((r) => (r as { kind: string }).kind);
+    assert.deepEqual(kinds, ["article", "seo"]);
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_jobs_tenant'").get());
+  } finally {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AnthropicProvider sends SEO requests with the SEO system prompt and image list", async () => {
+  const seo = { focusKeyword: "k", seoTitle: "T", seoDescription: "D", slug: "s", tags: [], imageAlts: [], suggestions: [] };
+  const { client, calls } = fakeClient({ stop_reason: "end_turn", parsed_output: seo, model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 1 } });
+  const res = await new AnthropicProvider(client).optimizeSeo({
+    site: { name: "S", tagline: "" },
+    language: "English",
+    article: { title: "Bread", summary: "", tags: [], markdown: "Body" },
+    images: [{ url: "https://img.example/a.jpg", context: "Caption: a loaf" }],
+    otherTitles: [],
+    siteTags: ["baking"],
+    model: "claude-opus-5-5",
+    effort: "low",
+  });
+  assert.deepEqual(res.value, seo);
+  const p = calls[0] as any;
+  assert.ok(p.system[0].text.startsWith("You are an SEO editor"));
+  assert.ok(p.messages[0].content.includes("https://img.example/a.jpg") && p.messages[0].content.includes("baking"));
+  assert.equal(p.output_config.effort, "low");
 });

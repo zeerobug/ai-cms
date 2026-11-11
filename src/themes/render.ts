@@ -1,4 +1,4 @@
-import { renderBlocks, readingMinutes, slugify, type Block } from "../content/blocks.js";
+import { plainText, renderBlocks, readingMinutes, slugify, type Block } from "../content/blocks.js";
 import { escapeHtml, html, raw, safeUrl, type Raw } from "../util/html.js";
 import { FONTS, type ThemeSpec } from "./spec.js";
 
@@ -12,16 +12,31 @@ export interface SiteInfo {
   tagline: string;
   /** Prefix for internal links: "" for host-based tenancy, "/s/<slug>" for path-based. */
   base: string;
+  /**
+   * Absolute canonical root of the site, no trailing slash (e.g. "https://blog.example.com").
+   * Used for canonical links, Open Graph, structured data, the sitemap and the feed.
+   * Without it, pages render without absolute-URL metadata (unit tests).
+   */
+  url?: string;
+  /** BCP 47 language code (default "en"). */
+  lang?: string;
+  /** Home page meta description (falls back to the tagline). */
+  description?: string;
+  /** false = ask search engines not to index the site. Default true. */
+  indexable?: boolean;
 }
 
 export interface ArticleView {
   slug: string;
   title: string;
   summary: string;
+  /** Title tag for search results ('' = the title). */
+  seoTitle: string;
   seoDescription: string;
   blocks: Block[];
   tags: string[];
   publishedAt: string | null;
+  updatedAt: string;
   source: "human" | "ai";
   /** Cover image shown on the article page and on cards. */
   image: { url: string; alt: string } | null;
@@ -179,6 +194,66 @@ interface ShellOpts {
   body: Raw;
   preview?: Raw;
   feedHref?: string;
+  /** Path below the site root for the canonical URL ("/" = home). Omit on pages that shouldn't be indexed. */
+  path?: string;
+  /** Open Graph title (defaults to `title`). */
+  ogTitle?: string;
+  ogType?: "website" | "article";
+  /** Share image (absolute or root-relative URL). */
+  image?: { url: string; alt: string } | null;
+  /** Extra <meta> tags (article:published_time …). */
+  meta?: Raw;
+  /** schema.org objects, emitted as JSON-LD. */
+  jsonLd?: object[];
+  noindex?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// SEO helpers
+// ---------------------------------------------------------------------------
+
+/** Resolve a root-relative URL (e.g. /media/...) against the site's canonical origin. */
+function absUrl(site: SiteInfo, url: string): string | null {
+  const safe = safeUrl(url);
+  if (!safe || !site.url) return null;
+  try {
+    return new URL(safe, site.url + "/").href;
+  } catch {
+    return null;
+  }
+}
+
+/** DB timestamps are UTC "YYYY-MM-DD HH:MM:SS". */
+function parseDbDate(d: string): Date {
+  return new Date(d.replace(" ", "T") + (d.endsWith("Z") ? "" : "Z"));
+}
+const isoDate = (d: string | null) => (d ? parseDbDate(d).toISOString() : undefined);
+
+/** JSON-LD inside <script>: escape everything that could close the tag or confuse the HTML parser. */
+function jsonLdTag(data: object): Raw {
+  const json = JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  return raw(`<script type="application/ld+json">${json}</script>`);
+}
+
+function seoHead(site: SiteInfo, o: ShellOpts): Raw {
+  const canonical = o.path !== undefined && site.url ? site.url + o.path : null;
+  const image = o.image ? absUrl(site, o.image.url) : null;
+  const noindex = o.noindex || site.indexable === false || o.path === undefined;
+  return html`${o.description ? html`<meta name="description" content="${o.description}">` : ""}
+${noindex ? raw(`<meta name="robots" content="noindex">`) : ""}
+${canonical ? html`<link rel="canonical" href="${canonical}"><meta property="og:url" content="${canonical}">` : ""}
+<meta property="og:type" content="${o.ogType ?? "website"}"><meta property="og:site_name" content="${site.name}">
+<meta property="og:title" content="${o.ogTitle ?? o.title}">
+${o.description ? html`<meta property="og:description" content="${o.description}">` : ""}
+${image ? html`<meta property="og:image" content="${image}">${o.image!.alt ? html`<meta property="og:image:alt" content="${o.image!.alt}">` : ""}` : ""}
+<meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}">
+${o.meta ?? ""}
+${(o.jsonLd ?? []).map(jsonLdTag)}`;
 }
 
 function bodyClasses(t: ThemeSpec) {
@@ -199,11 +274,10 @@ function shell(site: SiteInfo, theme: ThemeSpec, o: ShellOpts): string {
       const href = safeUrl(n.href.startsWith("/") ? site.base + n.href : n.href);
       return href ? html`<a href="${href}">${n.label}</a>` : "";
     });
-  return `<!doctype html>${html`<html lang="en"><head>
+  return `<!doctype html>${html`<html lang="${site.lang || "en"}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${o.title}</title>
-${o.description ? html`<meta name="description" content="${o.description}"><meta property="og:description" content="${o.description}">` : ""}
-<meta property="og:title" content="${o.title}">
+${seoHead(site, o)}
 ${o.feedHref ? html`<link rel="alternate" type="application/rss+xml" title="${site.name}" href="${o.feedHref}">` : ""}
 ${fonts ? html`<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="${fonts}">` : ""}
 <style>${raw(themeVariables(theme))}${raw(BASE_CSS)}</style>
@@ -224,8 +298,7 @@ ${o.preview ?? ""}
 
 function fmtDate(d: string | null) {
   if (!d) return "";
-  const dt = new Date(d.replace(" ", "T") + (d.endsWith("Z") ? "" : "Z"));
-  return dt.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  return parseDbDate(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function meta(a: ArticleView, t: ThemeSpec): Raw {
@@ -258,7 +331,7 @@ export function renderHome(
   site: SiteInfo,
   theme: ThemeSpec,
   articles: ArticleView[],
-  opts: { heading?: string; preview?: Raw } = {},
+  opts: { heading?: string; preview?: Raw; /** canonical path ("/" by default) */ path?: string } = {},
 ): string {
   const h = theme.hero;
   const heroTitle = opts.heading ?? (h.title || site.name);
@@ -274,12 +347,19 @@ export function renderHome(
         ? html`<div class="posts">${articles.map((a) => card(site, theme, a))}</div>`
         : html`<p class="empty">Nothing published yet.</p>`}
     </div>`;
+  const description = opts.heading ? undefined : site.description || site.tagline;
   return shell(site, theme, {
     title: opts.heading ? `${opts.heading} · ${site.name}` : site.name,
-    description: site.tagline,
+    description: description || undefined,
     body,
     preview: opts.preview,
     feedHref: `${site.base}/feed.xml`,
+    path: opts.path ?? "/",
+    image: h.imageUrl ? { url: h.imageUrl, alt: "" } : null,
+    jsonLd:
+      opts.heading === undefined && site.url
+        ? [{ "@context": "https://schema.org", "@type": "WebSite", name: site.name, url: site.url + "/", description: description || undefined, inLanguage: site.lang || "en" }]
+        : undefined,
   });
 }
 
@@ -302,31 +382,90 @@ export function renderArticle(site: SiteInfo, theme: ThemeSpec, a: ArticleView, 
     </header>
     <div class="article-body"><div class="prose">${raw(renderBlocks(a.blocks))}</div>${toc}</div>
   </article></div>`;
+  const path = `/a/${encodeURIComponent(a.slug)}`;
+  const description = a.seoDescription || a.summary || undefined;
+  const image = coverUrl(a) ? a.image : null;
+  const imageAbs = image ? absUrl(site, image.url) : null;
+  const published = isoDate(a.publishedAt);
+  const modified = isoDate(a.updatedAt) ?? published;
+  const publisher = { "@type": "Organization", name: site.name, url: site.url ? site.url + "/" : undefined };
   return shell(site, theme, {
-    title: `${a.title} · ${site.name}`,
-    description: a.seoDescription || a.summary,
+    title: `${a.seoTitle || a.title} · ${site.name}`,
+    ogTitle: a.seoTitle || a.title,
+    description,
     body,
     preview: opts.preview,
     feedHref: `${site.base}/feed.xml`,
+    path,
+    ogType: "article",
+    image,
+    meta: html`${published ? html`<meta property="article:published_time" content="${published}">` : ""}${
+      modified ? html`<meta property="article:modified_time" content="${modified}">` : ""}${
+      a.tags.map((t) => html`<meta property="article:tag" content="${t}">`)}`,
+    jsonLd: site.url
+      ? [
+          {
+            "@context": "https://schema.org",
+            "@type": "BlogPosting",
+            headline: (a.seoTitle || a.title).slice(0, 110),
+            description,
+            image: imageAbs ? [imageAbs] : undefined,
+            datePublished: published,
+            dateModified: modified,
+            inLanguage: site.lang || "en",
+            keywords: a.tags.length ? a.tags.join(", ") : undefined,
+            wordCount: plainText(a.blocks).split(/\s+/).filter(Boolean).length,
+            mainEntityOfPage: site.url + path,
+            author: publisher,
+            publisher,
+          },
+          {
+            "@context": "https://schema.org",
+            "@type": "BreadcrumbList",
+            itemListElement: [
+              { "@type": "ListItem", position: 1, name: site.name, item: site.url + "/" },
+              { "@type": "ListItem", position: 2, name: a.title, item: site.url + path },
+            ],
+          },
+        ]
+      : undefined,
   });
 }
 
 export function renderNotFound(site: SiteInfo, theme: ThemeSpec): string {
   return shell(site, theme, {
     title: `Not found · ${site.name}`,
+    noindex: true,
     body: html`<div class="wrap"><p class="empty">That page doesn't exist. <a href="${site.base || "/"}">Go home</a></p></div>`,
   });
 }
 
-export function renderFeed(site: SiteInfo, origin: string, articles: ArticleView[]): string {
+export function renderFeed(site: SiteInfo & { url: string }, articles: ArticleView[]): string {
   const items = articles
     .map(
-      (a) => `<item><title>${escapeHtml(a.title)}</title><link>${escapeHtml(origin + site.base)}/a/${escapeHtml(a.slug)}</link>` +
-        `<guid>${escapeHtml(origin + site.base)}/a/${escapeHtml(a.slug)}</guid><description>${escapeHtml(a.summary)}</description>` +
-        (a.publishedAt ? `<pubDate>${new Date(a.publishedAt.replace(" ", "T") + "Z").toUTCString()}</pubDate>` : "") +
+      (a) => `<item><title>${escapeHtml(a.title)}</title><link>${escapeHtml(site.url)}/a/${escapeHtml(a.slug)}</link>` +
+        `<guid>${escapeHtml(site.url)}/a/${escapeHtml(a.slug)}</guid><description>${escapeHtml(a.summary)}</description>` +
+        (a.publishedAt ? `<pubDate>${parseDbDate(a.publishedAt).toUTCString()}</pubDate>` : "") +
         `</item>`,
     )
     .join("");
   return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${escapeHtml(site.name)}</title>` +
-    `<link>${escapeHtml(origin + site.base)}</link><description>${escapeHtml(site.tagline)}</description>${items}</channel></rss>`;
+    `<link>${escapeHtml(site.url)}</link><description>${escapeHtml(site.tagline)}</description>${items}</channel></rss>`;
+}
+
+/** sitemap.xml: home, every published article and every tag page, with canonical URLs. */
+export function renderSitemap(site: SiteInfo & { url: string }, articles: ArticleView[], tags: string[]): string {
+  const entry = (path: string, lastmod?: string) =>
+    `<url><loc>${escapeHtml(site.url + path)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}</url>`;
+  const newest = articles.map((a) => isoDate(a.updatedAt) ?? "").sort().at(-1);
+  return `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+    entry("/", newest || undefined) +
+    articles.map((a) => entry(`/a/${encodeURIComponent(a.slug)}`, isoDate(a.updatedAt) ?? isoDate(a.publishedAt))).join("") +
+    tags.map((t) => entry(`/tag/${encodeURIComponent(t)}`)).join("") +
+    `</urlset>`;
+}
+
+export function renderRobots(site: SiteInfo & { url: string }): string {
+  if (site.indexable === false) return "User-agent: *\nDisallow: /\n";
+  return `User-agent: *\nAllow: /\n\nSitemap: ${site.url}/sitemap.xml\n`;
 }

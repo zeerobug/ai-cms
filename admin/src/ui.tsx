@@ -111,7 +111,10 @@ export function ArticleTable({ base, rows }: { base: string; rows: ArticleSummar
       <tbody>
         {rows.map((a) => (
           <tr key={a.id}>
-            <td><Link to={`${base}/articles/${a.id}`}>{a.title}</Link></td>
+            <td>
+              <Link to={`${base}/articles/${a.id}`}>{a.title}</Link>
+              {a.seoMissing && <> <span className="badge seo-missing" title="Missing search title, meta description, tags or image alt text">SEO</span></>}
+            </td>
             <td><StatusBadge status={a.status} /></td>
             <td>{a.source === "ai" ? <AiBadge /> : "human"}</td>
             <td className="muted">{a.updatedAt}</td>

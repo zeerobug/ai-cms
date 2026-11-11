@@ -40,6 +40,8 @@ export function createApp(opts: { db?: DB; provider?: AIProvider; providerFactor
   app.use("/s/:tenant", pathTenant(repo), site);
 
   app.get("/", (_req, res) => res.redirect("/admin"));
+  // The platform host itself (admin, /s/ paths): keep crawlers out of the admin.
+  app.get("/robots.txt", (_req, res) => void res.type("text/plain").send("User-agent: *\nDisallow: /admin\n"));
 
   return { app, repo, ai, db };
 }

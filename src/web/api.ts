@@ -11,10 +11,11 @@ import { can, type Role } from "../tenancy.js";
  *
  *   GET  /api/v1/articles[?status=published]
  *   GET  /api/v1/articles/:id
- *   POST /api/v1/articles            { title, markdown | blocks, summary?, tags?, status?, imageUrl?, imageAlt? }
+ *   POST /api/v1/articles            { title, markdown | blocks, summary?, seoTitle?, seoDescription?, tags?, status?, imageUrl?, imageAlt? }
  *   POST /api/v1/ai/articles[?wait=1] { topic, instructions?, tone?, length?, publish?, designLook?, coverImage? }
  *   POST /api/v1/ai/themes[?wait=1]   { prompt, apply?, baseThemeId?, palette?, heroImage? }
  *        palette: text in any supported format, ["#hex", …] or { primary: "#hex", … }
+ *   POST /api/v1/ai/seo[?wait=1]      { target: "article", articleId, mode?: "replace" | "fill" } | { target: "articles" } | { target: "site" }
  *   GET  /api/v1/jobs/:id
  */
 export function apiRouter(repo: Repo, ai: AiService) {
@@ -55,6 +56,7 @@ export function apiRouter(repo: Repo, ai: AiService) {
     const id = repo.createArticle(res.locals.tenant!.id, {
       title: b.title,
       summary: String(b.summary ?? ""),
+      seoTitle: String(b.seoTitle ?? "").trim().slice(0, 200),
       seoDescription: String(b.seoDescription ?? ""),
       tags: Array.isArray(b.tags) ? b.tags.map(String) : [],
       blocks,
@@ -62,7 +64,8 @@ export function apiRouter(repo: Repo, ai: AiService) {
       source: "human",
       image: b.imageUrl ? { url: b.imageUrl, alt: String(b.imageAlt ?? "") } : null,
     });
-    res.status(201).json({ id, slug: repo.article(res.locals.tenant!.id, id)!.slug, status });
+    const seoJobId = ai.autoSeo(res.locals.tenant!, { userId: null, role: role(res) }, id);
+    res.status(201).json({ id, slug: repo.article(res.locals.tenant!.id, id)!.slug, status, seoJobId });
   });
 
   const jobJson = (tenantId: number, id: number) => {
@@ -81,6 +84,17 @@ export function apiRouter(repo: Repo, ai: AiService) {
     const t = res.locals.tenant!;
     if (!can(role(res), "design.manage")) return void res.status(403).json({ error: "forbidden" });
     const id = ai.requestTheme(t, { userId: null, role: role(res) }, req.body ?? {});
+    if (req.query.wait) await ai.wait(id);
+    res.status(req.query.wait ? 200 : 202).json(jobJson(t.id, id));
+  });
+
+  r.post("/ai/seo", async (req, res) => {
+    const t = res.locals.tenant!;
+    const b = req.body ?? {};
+    // Tokens have no user, so changing any article's metadata needs editAny; the home page needs settings.manage.
+    const perm = b.target === "site" ? "settings.manage" : "article.editAny";
+    if (!can(role(res), perm)) return void res.status(403).json({ error: "forbidden" });
+    const id = ai.requestSeo(t, { userId: null, role: role(res) }, b);
     if (req.query.wait) await ai.wait(id);
     res.status(req.query.wait ? 200 : 202).json(jobJson(t.id, id));
   });

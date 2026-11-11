@@ -5,6 +5,21 @@ import { config } from "./config.js";
 
 export type DB = DatabaseSync;
 
+/** Kept separate so migrateJobKinds can rebuild it (SQLite can't alter a CHECK constraint). */
+const AI_JOBS_TABLE = `CREATE TABLE IF NOT EXISTS ai_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('article','theme','seo')),
+  input TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
+  result TEXT,
+  error TEXT,
+  usage TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);`;
+
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
 
@@ -71,19 +86,7 @@ CREATE TABLE IF NOT EXISTS articles (
   UNIQUE (tenant_id, slug)
 );
 
-CREATE TABLE IF NOT EXISTS ai_jobs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('article','theme')),
-  input TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
-  result TEXT,
-  error TEXT,
-  usage TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  finished_at TEXT
-);
+${AI_JOBS_TABLE}
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,11 +126,28 @@ export function openDb(file = config.dbPath): DB {
   // Article cover image (https URL or /media/... path) and its alt text.
   addColumnIfMissing(db, "articles", "image_url", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "articles", "image_alt", "TEXT NOT NULL DEFAULT ''");
+  // Title tag for search results ('' = the article title).
+  addColumnIfMissing(db, "articles", "seo_title", "TEXT NOT NULL DEFAULT ''");
+  migrateJobKinds(db);
   // Jobs that were running when the process died can never finish.
   db.prepare(
     "UPDATE ai_jobs SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status IN ('queued','running')",
   ).run();
   return db;
+}
+
+/** Databases created before SEO jobs existed only allow 'article' and 'theme' jobs: rebuild the table. */
+function migrateJobKinds(db: DB) {
+  const row = one<{ sql: string }>(db, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ai_jobs'");
+  if (!row || row.sql.includes("'seo'")) return;
+  db.exec(`BEGIN;
+ALTER TABLE ai_jobs RENAME TO ai_jobs_old;
+${AI_JOBS_TABLE}
+INSERT INTO ai_jobs (id, tenant_id, user_id, kind, input, status, result, error, usage, created_at, finished_at)
+  SELECT id, tenant_id, user_id, kind, input, status, result, error, usage, created_at, finished_at FROM ai_jobs_old;
+DROP TABLE ai_jobs_old;
+CREATE INDEX IF NOT EXISTS idx_jobs_tenant ON ai_jobs(tenant_id, created_at);
+COMMIT;`);
 }
 
 /** Tiny forward-only migration for columns added after the first release. */

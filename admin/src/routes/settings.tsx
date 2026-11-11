@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { useLoaderData, useRevalidator, type LoaderFunctionArgs } from "react-router";
-import type { AiSettings, ArticleLength, Effort, Role, SettingsData, SettingsInput } from "../../../src/web/admin-types";
+import { Link, useLoaderData, useNavigate, useRevalidator, type LoaderFunctionArgs } from "react-router";
+import type { AiSettings, ArticleLength, Effort, Role, SeoSettings, SettingsData, SettingsInput } from "../../../src/web/admin-types";
 import { api, load, tapi } from "../api";
 import { checked, field, RoleSelect, useAction, useFlash, useTenant } from "../ui";
 
@@ -31,6 +31,12 @@ function SettingsForm({ s }: { s: SettingsData }) {
   const [busy, run] = useAction();
   const ai = s.ai;
   const key = s.apiKey;
+  const navigate = useNavigate();
+  const startSeo = (target: "site" | "articles") =>
+    run(async () => {
+      const { jobId } = await api<{ jobId: number }>(`${tapi(tenant.slug)}/ai/seo`, { body: { target } });
+      navigate(`/${tenant.slug}/jobs/${jobId}`);
+    });
 
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -53,12 +59,19 @@ function SettingsForm({ s }: { s: SettingsData }) {
       },
       themes: { autoApply: checked(fd, "autoApply"), minRoleToAutoApply: field(fd, "minRoleToAutoApply") as Role },
       images: { monthlyLimit: Math.max(0, Math.floor(Number(field(fd, "imageMonthlyLimit")) || 0)) },
+      seo: { autoOptimize: checked(fd, "seoAutoOptimize"), monthlyLimit: Math.max(0, Math.floor(Number(field(fd, "seoMonthlyLimit")) || 0)) },
+    };
+    const seoOut: SeoSettings = {
+      description: field(fd, "seoDescription").trim(),
+      lang: field(fd, "seoLang").trim() || "en",
+      indexing: checked(fd, "seoIndexing"),
     };
     const body: SettingsInput = {
       name: field(fd, "name"),
       tagline: field(fd, "tagline"),
       domain: field(fd, "domain") || null,
       ai: aiOut,
+      seo: seoOut,
       apiKey: field(fd, "apiKey"),
       clearKey: checked(fd, "clearKey"),
     };
@@ -79,6 +92,29 @@ function SettingsForm({ s }: { s: SettingsData }) {
           <div><label>Tagline</label><input name="tagline" defaultValue={s.tagline} /></div>
           <div><label>Custom domain</label><input name="domain" defaultValue={s.domain ?? ""} placeholder="blog.example.com" /></div>
         </div>
+      </div>
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Search engines (SEO)</h2>
+        <p className="muted">
+          Every page gets a canonical URL, Open Graph / Twitter cards and schema.org structured data automatically.
+          Search engines find your pages through the <a href={s.sitemapUrl} target="_blank" rel="noreferrer">sitemap</a> and{" "}
+          <a href={s.robotsUrl} target="_blank" rel="noreferrer">robots.txt</a>.
+        </p>
+        <label>Home page description <span className="muted">(shown in search results; 120–155 characters; empty = the tagline)</span></label>
+        <textarea name="seoDescription" defaultValue={s.seo.description} maxLength={300} style={{ minHeight: "3.5rem" }} />
+        {ai.enabled && (
+          <p><button type="button" className="sm sec" onClick={() => startSeo("site")} disabled={busy}>✨ Write it with AI</button> <span className="muted">Save other changes first.</span></p>
+        )}
+        <div className="row">
+          <div><label>Content language code</label><input name="seoLang" defaultValue={s.seo.lang} placeholder="en" pattern="[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*" title="A BCP 47 code such as en, fr, pt-BR" /></div>
+        </div>
+        <label className="check"><input type="checkbox" name="seoIndexing" defaultChecked={s.seo.indexing} /> Let search engines index this site</label>
+        {s.seoMissing > 0 && (
+          <p>
+            <Link to={`/${tenant.slug}/articles?status=published`}>{s.seoMissing} published article{s.seoMissing === 1 ? " is" : "s are"}</Link> missing search metadata.{" "}
+            {ai.enabled && <button type="button" className="sm sec" onClick={() => startSeo("articles")} disabled={busy}>✨ Fill it in with AI</button>}
+          </p>
+        )}
       </div>
       <div className="panel ai">
         <h2 style={{ marginTop: 0 }}>AI policy</h2>
@@ -138,6 +174,11 @@ function SettingsForm({ s }: { s: SettingsData }) {
           Claude only writes text, so AI images come from OpenAI: the site's OpenAI provider, or the platform's OpenAI key when the site uses Claude.
           {tenant.ai.imageProvider ? <> This site generates images with <strong>{tenant.ai.imageProvider}</strong>.</> : " AI images aren't available for this site right now; uploads always work."}
         </p>
+
+        <h2>SEO</h2>
+        <label className="check"><input type="checkbox" name="seoAutoOptimize" defaultChecked={ai.seo.autoOptimize} /> When an article is published with missing search metadata, let the AI fill it in (search title, meta description, tags, image alt text)</label>
+        <div className="row"><div><label>Monthly AI SEO job limit (0 = unlimited)</label><input type="number" min={0} name="seoMonthlyLimit" defaultValue={ai.seo.monthlyLimit} /></div></div>
+        <p className="muted">Automatic runs only fill empty fields; they never overwrite what an editor wrote or change a published URL.</p>
       </div>
       <p><button disabled={busy}>Save settings</button></p>
     </form>

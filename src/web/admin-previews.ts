@@ -1,8 +1,8 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import type { Repo } from "../repo.js";
+import type { Repo, Tenant } from "../repo.js";
 import { renderArticle, renderHome } from "../themes/render.js";
 import { html } from "../util/html.js";
-import { siteInfo } from "./site.js";
+import { requestOrigin, siteInfo } from "./site.js";
 
 /**
  * Server-rendered previews of articles and themes. They use the public theme renderer
@@ -11,6 +11,9 @@ import { siteInfo } from "./site.js";
  *   GET /admin/:tenant/articles/:id/preview
  *   GET /admin/:tenant/design/:id/preview
  */
+/** Previews show the real SEO tags (canonical etc.) but are never indexable. */
+const previewSite = (tn: Tenant, req: Request) => ({ ...siteInfo(tn, `/s/${tn.slug}`, requestOrigin(req)), indexable: false });
+
 export function adminPreviewRouter(repo: Repo) {
   const r = express.Router({ mergeParams: true });
 
@@ -29,7 +32,7 @@ export function adminPreviewRouter(repo: Repo) {
     const a = repo.article(tn.id, Number(req.params.id));
     if (!a) return void res.status(404).send("Not found");
     const theme = a.theme_id ? repo.themeSpec(repo.theme(tn.id, a.theme_id)) : repo.activeTheme(tn);
-    res.send(renderArticle(siteInfo(tn, `/s/${tn.slug}`), theme, repo.toView(a), {
+    res.send(renderArticle(previewSite(tn, req), theme, repo.toView(a), {
       preview: html`<div class="preview-bar">Preview · status: ${a.status} · <a href="/admin/${tn.slug}/articles/${a.id}">back to editor</a></div>`,
     }));
   });
@@ -39,7 +42,7 @@ export function adminPreviewRouter(repo: Repo) {
     const row = repo.theme(tn.id, Number(req.params.id));
     if (!row) return void res.status(404).send("Not found");
     const articles = repo.articles(tn.id, { status: "published", limit: 12 }).map((a) => repo.toView(a));
-    res.send(renderHome(siteInfo(tn, `/s/${tn.slug}`), repo.themeSpec(row), articles, {
+    res.send(renderHome(previewSite(tn, req), repo.themeSpec(row), articles, {
       preview: html`<div class="preview-bar">Previewing theme “${row.name}” · <a href="/admin/${tn.slug}/design">back to Design</a></div>`,
     }));
   });

@@ -446,3 +446,163 @@ test("images: sites on a text-only provider (Claude) get a clear error, and AI a
   assert.match(result.message, /Cover image skipped/);
   assert.ok(repo.article(t.id, result.articleId));
 });
+
+// ---------------------------------------------------------------------------
+// SEO
+// ---------------------------------------------------------------------------
+
+/** Waits for every SEO job of a tenant and returns the newest one. */
+async function lastSeoJob(tenantId: number) {
+  const jobs = repo.jobs(tenantId, 50).filter((j) => j.kind === "seo");
+  for (const j of jobs) await ai.wait(j.id);
+  return jobs[0] ? repo.job(tenantId, jobs[0].id)! : undefined;
+}
+
+test("SEO: AI articles get a search title and slug; pages carry canonical URLs and structured data", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const result = jobResult(open.id, await runJob("/t/open/ai/article", s, { topic: "cold brew coffee", publish: true }));
+  const a = repo.article(open.id, result.articleId)!;
+  assert.equal(a.slug, "cold-brew-coffee-guide");
+  assert.ok(a.seo_title.startsWith("Cold brew coffee"));
+  const page = await (await fetch(`${base}/s/open/a/${a.slug}`)).text();
+  // "open" has a custom domain: the /s/ copy points search engines there.
+  assert.ok(page.includes(`<link rel="canonical" href="https://open.example.com/a/${a.slug}">`));
+  assert.ok(page.includes(`<title>${a.seo_title} · Open Site</title>`));
+  assert.ok(page.includes('"@type":"BlogPosting"'));
+});
+
+test("SEO: sitemap.xml and robots.txt per site, and the indexing switch", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const t = repo.createTenant({ slug: "seo-site", name: "SEO Site", ownerId: users.owner });
+  const id = repo.createArticle(t.id, { title: "Mapped page", blocks: [], tags: ["maps"], status: "published", source: "human" });
+  repo.createArticle(t.id, { title: "Secret draft", blocks: [], status: "draft", source: "human" });
+  const sitemap = await (await fetch(`${base}/s/seo-site/sitemap.xml`)).text();
+  assert.ok(sitemap.includes(`<loc>${base}/s/seo-site/a/${repo.article(t.id, id)!.slug}</loc>`));
+  assert.ok(sitemap.includes(`<loc>${base}/s/seo-site/tag/maps</loc>`));
+  assert.ok(!sitemap.includes("secret-draft"));
+  assert.equal(await (await fetch(`${base}/s/seo-site/robots.txt`)).text(), `User-agent: *\nAllow: /\n\nSitemap: ${base}/s/seo-site/sitemap.xml\n`);
+  // Custom-domain sites serve them at the root.
+  assert.ok((await getWithHost("/sitemap.xml", "open.example.com")).body.includes("<loc>https://open.example.com/</loc>"));
+  assert.ok((await (await fetch(`${base}/robots.txt`)).text()).includes("Disallow: /admin"));
+
+  const settings = await getJson("/t/seo-site/settings", s);
+  assert.equal(settings.sitemapUrl, `${base}/s/seo-site/sitemap.xml`);
+  const put = await call("PUT", "/t/seo-site/settings", s, { ...settings, seo: { description: "All about maps", lang: "de", indexing: false } });
+  assert.equal(put.status, 200, await put.clone().text());
+  assert.equal(await (await fetch(`${base}/s/seo-site/robots.txt`)).text(), "User-agent: *\nDisallow: /\n");
+  const home = await (await fetch(`${base}/s/seo-site`)).text();
+  assert.ok(home.includes('<html lang="de">') && home.includes('content="All about maps"') && home.includes('content="noindex"'));
+  const bad = await call("PUT", "/t/seo-site/settings", s, { ...settings, seo: { description: "", lang: "not a language!", indexing: true } });
+  assert.equal(bad.status, 400);
+});
+
+test("SEO: optimizing an article rewrites its metadata and returns suggestions", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const id = repo.createArticle(strict.id, {
+    title: "Growing tomatoes on a balcony",
+    blocks: markdownToBlocks("Short text.\n\n![](https://img.example/tomato.jpg)"),
+    status: "draft",
+    source: "human",
+    seoDescription: "Old description",
+  });
+  const jobId = await runJob("/t/strict/ai/seo", s, { target: "article", articleId: id });
+  const job = await getJson(`/t/strict/jobs/${jobId}`, s);
+  assert.equal(job.status, "succeeded", job.error);
+  assert.equal(job.kind, "seo");
+  assert.ok(job.request.includes("Growing tomatoes"));
+  assert.ok(job.result.suggestions.length > 0);
+  assert.equal(job.result.focusKeyword, "growing tomatoes balcony");
+  const a = repo.article(strict.id, id)!;
+  assert.equal(a.seo_title, "Growing tomatoes on a balcony");
+  assert.equal(a.seo_description, "Short text.");
+  assert.equal(a.slug, "growing-tomatoes-balcony", "drafts get the AI slug");
+  assert.ok(a.blocks.includes("Illustration for"), "image alt text filled");
+  const detail = await getJson(`/t/strict/articles/${id}`, s);
+  assert.equal(detail.seoTitle, a.seo_title);
+});
+
+test("SEO: publishing an article with gaps auto-fills them without overwriting the editor's text", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const created = await post("/t/open/articles", s, { title: "Hand made SEO", markdown: "Body", seoDescription: "Mine", status: "draft" });
+  const { id } = await created.json();
+  assert.equal(await lastSeoJob(open.id).then((j) => j && JSON.parse(j.input).articleId === id), false, "drafts aren't optimized");
+  assert.equal((await post(`/t/open/articles/${id}/status`, s, { status: "published" })).status, 200);
+  const job = (await lastSeoJob(open.id))!;
+  assert.equal(JSON.parse(job.input).articleId, id);
+  assert.equal(JSON.parse(job.input).mode, "fill");
+  assert.equal(job.status, "succeeded", job.error ?? "");
+  const a = repo.article(open.id, id)!;
+  assert.equal(a.seo_description, "Mine");
+  assert.equal(a.seo_title, "Hand made SEO");
+  assert.equal(a.slug, "hand-made-seo", "published URLs never change");
+  // Complete metadata: re-publishing doesn't queue another job.
+  const before = repo.jobs(open.id, 100).length;
+  await post(`/t/open/articles/${id}/status`, s, { status: "draft" });
+  await post(`/t/open/articles/${id}/status`, s, { status: "published" });
+  assert.equal(repo.jobs(open.id, 100).length, before);
+});
+
+test("SEO: auto-fill respects the site setting", async () => {
+  const t = repo.createTenant({ slug: "no-auto-seo", name: "No auto", ownerId: users.owner });
+  repo.updateTenantSettings(t.id, TenantSettingsSchema.parse({ ai: { seo: { autoOptimize: false } } }));
+  const s = await login("owner@x.com", "pw-owner-1");
+  await post("/t/no-auto-seo/articles", s, { title: "Plain", markdown: "Body", status: "published" });
+  assert.equal(await lastSeoJob(t.id), undefined);
+  assert.equal((await getJson("/t/no-auto-seo/articles", s)).length, 1);
+});
+
+test("SEO: bulk fill, home page description, permissions and quota", async () => {
+  const owner = await login("owner@x.com", "pw-owner-1");
+  const author = await login("author@x.com", "pw-author-1");
+  const t = repo.createTenant({ slug: "bulk-seo", name: "Bulk SEO", tagline: "Notes on bread", ownerId: users.owner });
+  repo.setMembership(users.author, t.id, "author");
+  repo.updateTenantSettings(t.id, TenantSettingsSchema.parse({ ai: { seo: { autoOptimize: false, monthlyLimit: 3 } } }));
+  const ids = ["Rye bread basics", "Starter care"].map((title) =>
+    repo.createArticle(t.id, { title, blocks: markdownToBlocks("Text"), tags: ["bread"], status: "published", source: "human" }),
+  );
+
+  const list = await getJson("/t/bulk-seo/articles", owner);
+  assert.ok(list.every((a: { seoMissing: boolean }) => a.seoMissing));
+  assert.equal((await getJson("/t/bulk-seo/settings", owner)).seoMissing, 2);
+
+  assert.equal((await post("/t/bulk-seo/ai/seo", author, { target: "articles" })).status, 403);
+  assert.equal((await post("/t/bulk-seo/ai/seo", author, { target: "site" })).status, 403);
+  assert.equal((await post("/t/bulk-seo/ai/seo", author, { target: "article", articleId: ids[0] })).status, 403, "authors can't edit published articles");
+  assert.equal((await post("/t/bulk-seo/ai/seo", owner, { target: "nope" })).status, 400);
+
+  const bulk = jobResult(t.id, await runJob("/t/bulk-seo/ai/seo", owner, { target: "articles" }));
+  assert.equal(bulk.optimized, 2);
+  for (const id of ids) assert.ok(repo.article(t.id, id)!.seo_title);
+  assert.ok((await getJson("/t/bulk-seo/articles", owner)).every((a: { seoMissing: boolean }) => !a.seoMissing));
+  const nothing = await post("/t/bulk-seo/ai/seo", owner, { target: "articles" });
+  assert.equal(nothing.status, 409);
+
+  const site = jobResult(t.id, await runJob("/t/bulk-seo/ai/seo", owner, { target: "site" }));
+  assert.ok(site.description.startsWith("Bulk SEO: Notes on bread."));
+  const settings = await getJson("/t/bulk-seo/settings", owner);
+  assert.equal(settings.seo.description, site.description);
+  assert.equal(settings.ai.seo.monthlyLimit, 3, "other settings untouched");
+  assert.ok((await (await fetch(`${base}/s/bulk-seo`)).text()).includes(`content="${site.description}"`));
+
+  // Quota: 2 jobs used (bulk + site), so one more is allowed, then 429.
+  assert.equal((await post("/t/bulk-seo/ai/seo", owner, { target: "site" })).status, 202);
+  await lastSeoJob(t.id);
+  assert.equal((await post("/t/bulk-seo/ai/seo", owner, { target: "site" })).status, 429);
+});
+
+test("SEO: REST API can request SEO jobs with token roles", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const editorTok = (await (await post("/t/strict/tokens", s, { name: "seo", role: "editor" })).json()).token;
+  const authorTok = (await (await post("/t/strict/tokens", s, { name: "seo-a", role: "author" })).json()).token;
+  const id = repo.createArticle(strict.id, { title: "API SEO", blocks: [], status: "published", source: "human" });
+  const req = (tok: string, body: unknown) =>
+    fetch(`${base}/api/v1/ai/seo?wait=1`, { method: "POST", headers: { authorization: `Bearer ${tok}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await req(authorTok, { target: "article", articleId: id })).status, 403);
+  assert.equal((await req(editorTok, { target: "site" })).status, 403);
+  const res = await req(editorTok, { target: "article", articleId: id, mode: "fill" });
+  assert.equal(res.status, 200);
+  const job = await res.json();
+  assert.equal(job.status, "succeeded");
+  assert.equal(repo.article(strict.id, id)!.seo_title, "API SEO");
+  assert.equal((await req(editorTok, { target: "article", articleId: 999999 })).status, 404);
+});
