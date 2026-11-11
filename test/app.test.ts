@@ -9,7 +9,16 @@ import { markdownToBlocks } from "../src/content/blocks.js";
 import { openDb } from "../src/db.js";
 import { TenantSettingsSchema } from "../src/tenancy.js";
 
-const { app, repo, ai } = createApp({ db: openDb(":memory:"), provider: new MockProvider() });
+/** Records which provider/key tenants with their own LLM settings resolve to. */
+const factoryCalls: { name: string; apiKey: string | undefined }[] = [];
+const { app, repo, ai } = createApp({
+  db: openDb(":memory:"),
+  provider: new MockProvider(),
+  providerFactory: (name, apiKey) => {
+    factoryCalls.push({ name, apiKey });
+    return new MockProvider();
+  },
+});
 let base = "";
 let server: ReturnType<typeof app.listen>;
 
@@ -35,26 +44,45 @@ before(async () => {
 });
 after(() => server.close());
 
-async function login(email: string, password: string) {
-  const res = await fetch(`${base}/admin/login`, {
+type Session = { cookie: string; csrf: string };
+
+/** Logs in through the admin JSON API; returns the session cookie and CSRF token. */
+async function login(email: string, password: string): Promise<Session> {
+  const res = await fetch(`${base}/admin/api/login`, {
     method: "POST",
-    body: new URLSearchParams({ email, password }),
-    redirect: "manual",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
   });
+  assert.equal(res.status, 200);
   const cookie = res.headers.get("set-cookie")!.split(";")[0];
-  const page = await (await fetch(`${base}/admin`, { headers: { cookie } })).text();
-  const csrf = /name="_csrf" value="([^"]+)"/.exec(page)![1];
+  const { csrf } = await res.json();
   return { cookie, csrf };
 }
 
-function post(path: string, s: { cookie: string; csrf: string }, body: Record<string, string>) {
-  return fetch(base + path, {
-    method: "POST",
-    headers: { cookie: s.cookie },
-    body: new URLSearchParams({ _csrf: s.csrf, ...body }),
-    redirect: "manual",
+/** Calls /admin/api<path> as the given session. */
+function call(method: string, path: string, s: Session, body?: unknown) {
+  return fetch(`${base}/admin/api${path}`, {
+    method,
+    headers: { cookie: s.cookie, "x-csrf-token": s.csrf, "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
+const post = (path: string, s: Session, body: unknown = {}) => call("POST", path, s, body);
+async function getJson<T = any>(path: string, s: Session): Promise<T> {
+  const res = await call("GET", path, s);
+  assert.equal(res.status, 200, `${path}: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+/** Starts an AI job, waits for it, returns its id. */
+async function runJob(path: string, s: Session, body: unknown) {
+  const res = await post(path, s, body);
+  assert.equal(res.status, 202, await res.clone().text());
+  const { jobId } = await res.json();
+  await ai.wait(jobId);
+  return jobId as number;
+}
+const jobResult = (tenantId: number, jobId: number) => JSON.parse(repo.job(tenantId, jobId)!.result!);
 
 /** fetch() can't override Host, so use node:http for host-based tenancy checks. */
 function getWithHost(path: string, host: string): Promise<{ status: number; body: string }> {
@@ -69,15 +97,10 @@ function getWithHost(path: string, host: string): Promise<{ status: number; body
   });
 }
 
-const jobIdFrom = (res: Response) => Number(/\/jobs\/(\d+)/.exec(res.headers.get("location") ?? "")![1]);
-
 test("AI article is published directly when tenant policy allows", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
-  const res = await post("/admin/open/ai/article", s, { topic: "sourdough baking at home", publish: "on" });
-  assert.equal(res.status, 303);
-  const jobId = jobIdFrom(res);
-  await ai.wait(jobId);
-  const job = await (await fetch(`${base}/admin/open/jobs/${jobId}.json`, { headers: { cookie: s.cookie } })).json();
+  const jobId = await runJob("/t/open/ai/article", s, { topic: "sourdough baking at home", publish: true });
+  const job = await getJson(`/t/open/jobs/${jobId}`, s);
   assert.equal(job.status, "succeeded");
   assert.equal(job.result.status, "published");
   const page = await (await fetch(`${base}/s/open/a/${job.result.slug}`)).text();
@@ -90,26 +113,25 @@ test("AI article is published directly when tenant policy allows", async () => {
 
 test("AI article goes to review when tenant policy requires it", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
-  const jobId = jobIdFrom(await post("/admin/strict/ai/article", s, { topic: "kubernetes cost control", publish: "on" }));
-  await ai.wait(jobId);
-  const job = repo.job(strict.id, jobId)!;
-  const result = JSON.parse(job.result!);
+  const result = jobResult(strict.id, await runJob("/t/strict/ai/article", s, { topic: "kubernetes cost control", publish: true }));
   assert.equal(result.status, "review");
   assert.equal((await fetch(`${base}/s/strict/a/${result.slug}`)).status, 404);
 });
 
 test("authors cannot auto-publish even on permissive tenants", async () => {
   const s = await login("author@x.com", "pw-author-1");
-  const jobId = jobIdFrom(await post("/admin/open/ai/article", s, { topic: "indoor plants", publish: "on" }));
-  await ai.wait(jobId);
-  assert.equal(JSON.parse(repo.job(open.id, jobId)!.result!).status, "review");
+  const jobId = await runJob("/t/open/ai/article", s, { topic: "indoor plants", publish: true });
+  assert.equal(jobResult(open.id, jobId).status, "review");
+  const info = await getJson("/t/open", s);
+  assert.equal(info.role, "author");
+  assert.equal(info.ai.canAutoPublish, false);
+  assert.equal(info.can["settings.manage"], false);
+  assert.equal((await call("GET", "/t/open/settings", s)).status, 403);
 });
 
 test("AI can design an article-specific look", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
-  const jobId = jobIdFrom(await post("/admin/open/ai/article", s, { topic: "deep sea creatures", publish: "on", designLook: "on", designBrief: "dark ocean mood" }));
-  await ai.wait(jobId);
-  const result = JSON.parse(repo.job(open.id, jobId)!.result!);
+  const result = jobResult(open.id, await runJob("/t/open/ai/article", s, { topic: "deep sea creatures", publish: true, designLook: true, designBrief: "dark ocean mood" }));
   assert.ok(result.themeId);
   const page = await (await fetch(`${base}/s/open/a/${result.slug}`)).text();
   assert.ok(page.includes("--bg:#0b0f19"), "article renders with its own AI theme");
@@ -117,17 +139,50 @@ test("AI can design an article-specific look", async () => {
 
 test("AI theme is applied only when policy allows", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
-  const j1 = jobIdFrom(await post("/admin/open/ai/theme", s, { prompt: "retro 70s magazine", apply: "on" }));
-  await ai.wait(j1);
-  const r1 = JSON.parse(repo.job(open.id, j1)!.result!);
-  assert.equal(r1.applied, true);
+  assert.equal(jobResult(open.id, await runJob("/t/open/ai/theme", s, { prompt: "retro 70s magazine", apply: true })).applied, true);
   assert.ok((await (await fetch(`${base}/s/open`)).text()).includes("home-magazine"));
 
   const before = repo.tenantById(strict.id)!.active_theme_id;
-  const j2 = jobIdFrom(await post("/admin/strict/ai/theme", s, { prompt: "dark neon tech", apply: "on" }));
-  await ai.wait(j2);
-  assert.equal(JSON.parse(repo.job(strict.id, j2)!.result!).applied, false);
+  assert.equal(jobResult(strict.id, await runJob("/t/strict/ai/theme", s, { prompt: "dark neon tech", apply: true })).applied, false);
   assert.equal(repo.tenantById(strict.id)!.active_theme_id, before);
+});
+
+test("themes can be built from a palette, manually or by the AI", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const res = await post("/t/open/themes/palette", s, { palette: "--primary: #123abc;\n--accent: #ff8800;\n#fbfaf7", name: "Paletted" });
+  assert.equal(res.status, 201);
+  assert.match((await res.json()).message, /created from 3 colors/);
+  const manual = repo.themes(open.id).find((t) => t.name === "Paletted")!;
+  const spec = repo.themeSpec(manual);
+  assert.equal(spec.colors.primary, "#123abc");
+  assert.equal(spec.colors.accent, "#ff8800");
+  assert.equal(spec.colors.background, "#fbfaf7");
+
+  const bad = await post("/t/open/themes/palette", s, { palette: "nothing useful" });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /No colors found/);
+
+  const jobId = await runJob("/t/open/ai/theme", s, { prompt: "dark neon tech", palette: '{"primary":"#00ff99","background":"#050505"}' });
+  const ai1 = repo.themeSpec(repo.theme(open.id, jobResult(open.id, jobId).themeId));
+  assert.equal(ai1.colors.primary, "#00ff99", "pinned palette roles survive the AI");
+  assert.equal(ai1.colors.background, "#050505");
+});
+
+test("articles: create, edit, publish, delete through the admin API", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const created = await post("/t/open/articles", s, { title: "Hand written", markdown: "## Hello\n\nBody text", tags: "one, two", status: "draft" });
+  assert.equal(created.status, 201);
+  const { id } = await created.json();
+  const detail = await getJson(`/t/open/articles/${id}`, s);
+  assert.equal(detail.title, "Hand written");
+  assert.deepEqual(detail.tags, ["one", "two"]);
+  assert.ok(detail.markdown.includes("## Hello"));
+  assert.equal((await call("PUT", `/t/open/articles/${id}`, s, { ...detail, title: "Hand written v2" })).status, 200);
+  assert.equal((await post(`/t/open/articles/${id}/status`, s, { status: "published" })).status, 200);
+  assert.equal((await fetch(`${base}/s/open/a/hand-written`)).status, 200);
+  assert.equal((await fetch(`${base}/admin/open/articles/${id}/preview`, { headers: { cookie: s.cookie } })).status, 200);
+  assert.equal((await call("DELETE", `/t/open/articles/${id}`, s)).status, 200);
+  assert.equal(repo.article(open.id, id), undefined);
 });
 
 test("tenants are isolated", async () => {
@@ -135,13 +190,28 @@ test("tenants are isolated", async () => {
   assert.equal((await fetch(`${base}/s/strict/a/strict-only`)).status, 200);
   assert.equal((await fetch(`${base}/s/open/a/strict-only`)).status, 404);
   const s = await login("out@x.com", "pw-out-1");
-  assert.equal((await fetch(`${base}/admin/open`, { headers: { cookie: s.cookie } })).status, 403);
+  assert.equal((await call("GET", "/t/open", s)).status, 403);
+  assert.equal((await call("GET", "/t/open/articles", s)).status, 403);
+  const strictArticle = repo.articles(strict.id)[0];
+  const owner = await login("owner@x.com", "pw-owner-1");
+  assert.equal((await call("GET", `/t/open/articles/${strictArticle.id}`, owner)).status, 404, "ids from another tenant don't resolve");
 });
 
-test("CSRF token is required for admin POSTs", async () => {
+test("admin API requires a session, CSRF token and JSON", async () => {
+  const anon = await fetch(`${base}/admin/api/t/open`);
+  assert.equal(anon.status, 401);
   const s = await login("owner@x.com", "pw-owner-1");
-  const res = await post("/admin/open/ai/article", { cookie: s.cookie, csrf: "nope" }, { topic: "x y z" });
-  assert.equal(res.status, 403);
+  assert.equal((await post("/t/open/ai/article", { cookie: s.cookie, csrf: "nope" }, { topic: "x y z" })).status, 403);
+  assert.equal((await call("DELETE", "/t/open/themes/1", { cookie: s.cookie, csrf: "nope" })).status, 403);
+  const form = await fetch(`${base}/admin/api/t/open/ai/article`, {
+    method: "POST",
+    headers: { cookie: s.cookie, "x-csrf-token": s.csrf, "content-type": "application/x-www-form-urlencoded" },
+    body: "topic=hello+world",
+  });
+  assert.equal(form.status, 415);
+  const session = await getJson("/session", s);
+  assert.equal(session.user.email, "owner@x.com");
+  assert.equal(session.csrf, s.csrf);
 });
 
 test("REST API: token auth, AI article with wait, role limits", async () => {
@@ -190,10 +260,50 @@ test("monthly AI limit is enforced", async () => {
   assert.equal((await call()).status, 429);
 });
 
-test("admin pages render", async () => {
+test("admin API pages return data", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
-  for (const p of ["/admin/open", "/admin/open/articles", "/admin/open/design", "/admin/open/settings", "/s/open", "/s/open/feed.xml"]) {
-    const res = await fetch(base + p, { headers: { cookie: s.cookie } });
-    assert.equal(res.status, 200, p);
-  }
+  for (const p of ["/sites", "/t/open", "/t/open/dashboard", "/t/open/articles", "/t/open/articles/new", "/t/open/themes", "/t/open/settings"]) await getJson(p, s);
+  for (const p of ["/s/open", "/s/open/feed.xml"]) assert.equal((await fetch(base + p)).status, 200, p);
+});
+
+test("tenant LLM provider and API key: stored encrypted, used for jobs, platform default otherwise", async () => {
+  const t = repo.createTenant({ slug: "byok", name: "BYOK", ownerId: users.owner });
+  const s = await login("owner@x.com", "pw-owner-1");
+  const settings = await getJson("/t/byok/settings", s);
+  const save = (ai: object, extra: object = {}) => call("PUT", "/t/byok/settings", s, { name: "BYOK", tagline: "", domain: null, ai: { ...settings.ai, ...ai }, ...extra });
+
+  // Default: platform provider, factory not used.
+  assert.equal(settings.ai.provider, "default");
+  factoryCalls.length = 0;
+  await runJob("/t/byok/ai/article", s, { topic: "platform default provider" });
+  assert.equal(factoryCalls.length, 0);
+
+  // Choose Anthropic with the site's own key.
+  const key = "sk-ant-tenant-secret-1234";
+  assert.equal((await save({ provider: "anthropic" }, { apiKey: key })).status, 200);
+  const tn = repo.tenantById(t.id)!;
+  assert.equal(tn.settings.ai.provider, "anthropic");
+  assert.equal(tn.hasAiKey, true);
+  assert.ok(!JSON.stringify(tn).includes(key), "key is not in tenant settings");
+  assert.ok(!repo.tenantAiKey(t.id)!.includes(key), "key is encrypted at rest");
+  const raw = await (await call("GET", "/t/byok/settings", s)).text();
+  assert.ok(!raw.includes(key) && raw.includes("…1234"), "settings API only returns a masked key");
+
+  await runJob("/t/byok/ai/article", s, { topic: "tenant key provider" });
+  assert.deepEqual(factoryCalls, [{ name: "anthropic", apiKey: key }]);
+
+  // Saving again without a key keeps it; clearing falls back to the platform key.
+  await save({ provider: "anthropic" });
+  assert.equal(repo.tenantById(t.id)!.hasAiKey, true);
+  await save({ provider: "anthropic" }, { clearKey: true });
+  assert.equal(repo.tenantById(t.id)!.hasAiKey, false);
+  factoryCalls.length = 0;
+  await runJob("/t/byok/ai/article", s, { topic: "platform key fallback" });
+  assert.deepEqual(factoryCalls, [{ name: "anthropic", apiKey: undefined }]);
+
+  // Undecryptable key (e.g. APP_SECRET changed) is rejected up front.
+  repo.setTenantAiKey(t.id, "v1:garbage");
+  const res = await post("/t/byok/ai/article", s, { topic: "broken key" });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /can't be decrypted/);
 });

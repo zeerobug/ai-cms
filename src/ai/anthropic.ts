@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { z } from "zod";
+import { describePalette } from "../themes/palette.js";
 import { AiThemeSchema, FONTS } from "../themes/spec.js";
 import {
   AiRefusalError,
@@ -88,8 +89,15 @@ export class AnthropicProvider implements AIProvider {
     const user = [
       `Website: ${req.site.name}${req.site.tagline ? ` — ${req.site.tagline}` : ""}`,
       `Current theme:\n${JSON.stringify(req.current, null, 2)}`,
+      req.palette &&
+        `Color palette supplied by the user (${describePalette(req.palette)}).\n` +
+          `Build the theme colors from this palette: use assigned colors exactly for their roles and give the other ` +
+          `palette colors sensible roles (typically the most saturated as primary/accent). You may derive tints or ` +
+          `shades of palette colors for background, surface, muted and border when needed for readability and contrast.`,
       `Design request: ${req.prompt}`,
-    ].join("\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     return this.structured(THEME_SYSTEM, user, AiThemeSchema, req.model, req.effort);
   }
 

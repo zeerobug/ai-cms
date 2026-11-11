@@ -27,10 +27,20 @@ export const can = (role: Role, perm: Permission) => atLeast(role, PERMISSIONS[p
 
 const role = z.enum(ROLES);
 
+/** LLM backends a tenant can choose. "default" (in settings) means the platform's configured provider. */
+export const AI_PROVIDERS = ["anthropic", "mock"] as const;
+export type AiProviderName = (typeof AI_PROVIDERS)[number];
+
 export const TenantSettingsSchema = z.object({
   ai: z
     .object({
       enabled: z.boolean().default(true),
+      /**
+       * Which LLM backend this site uses. "default" = the platform provider and key (AI_PROVIDER /
+       * ANTHROPIC_API_KEY). A specific provider uses the site's own API key when one is stored
+       * (kept encrypted outside these settings), else falls back to the platform key.
+       */
+      provider: z.enum(["default", ...AI_PROVIDERS]).default("default"),
       model: z.string().min(1).default(config.defaultModel),
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
       /** Lowest role allowed to ask the AI for anything. */

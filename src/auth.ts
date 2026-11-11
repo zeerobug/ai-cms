@@ -65,11 +65,11 @@ export function sessionMiddleware(repo: Repo) {
         res.locals.csrf = csrfToken(sid);
       }
     }
-    if (req.method === "POST" && res.locals.sid) {
+    if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && res.locals.sid) {
       const sent = (req.body?._csrf as string | undefined) ?? req.get("x-csrf-token");
       const expected = res.locals.csrf!;
       if (!sent || sent.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(expected))) {
-        res.status(403).send("Invalid CSRF token. Reload the page and try again.");
+        res.status(403).json({ error: "Invalid CSRF token. Reload the page and try again." });
         return;
       }
     }

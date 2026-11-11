@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BlocksSchema } from "../content/blocks.js";
+import type { Palette } from "../themes/palette.js";
 import type { AiTheme, ThemeSpec } from "../themes/spec.js";
 
 export const ArticleDraftSchema = z.object({
@@ -31,6 +32,8 @@ export interface ThemeRequest {
   prompt: string;
   site: { name: string; tagline: string };
   current: ThemeSpec;
+  /** User-supplied palette to build the colors from (already parsed and sanitized). */
+  palette?: Palette;
   model: string;
   effort: Effort;
 }

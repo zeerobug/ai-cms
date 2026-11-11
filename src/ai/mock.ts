@@ -1,4 +1,5 @@
 import type { Block } from "../content/blocks.js";
+import { paletteToColors } from "../themes/palette.js";
 import type { AiTheme } from "../themes/spec.js";
 import type { AIProvider, ArticleDraft, ArticleRequest, ThemeRequest } from "./provider.js";
 
@@ -69,6 +70,7 @@ export class MockProvider implements AIProvider {
     ];
     const palette = palettes.find(([re]) => re.test(p));
     if (palette) Object.assign(theme.colors, palette[1]);
+    if (req.palette) theme.colors = paletteToColors(req.palette, theme.colors);
 
     if (/serif|editorial|newspaper|magazine|classic|elegant|luxury/.test(p)) {
       theme.typography.headingFont = "Playfair Display";

@@ -1,8 +1,3 @@
-import { html, raw, type Raw } from "../util/html.js";
-import type { Tenant } from "../repo.js";
-import type { Role } from "../tenancy.js";
-
-const CSS = `
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f8;color:#1c1d21}
 a{color:#3b5bdb}header.top{background:#15161a;color:#fff;padding:.7rem 1.5rem;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap}
 header.top a{color:#d0d4dd;text-decoration:none}header.top a.on,header.top a:hover{color:#fff}
@@ -36,49 +31,9 @@ th{font-size:.75rem;text-transform:uppercase;color:#6b7080;letter-spacing:.04em}
 .spinner{width:22px;height:22px;border:3px solid #ccd;border-top-color:#3b5bdb;border-radius:50%;animation:s 1s linear infinite;display:inline-block;vertical-align:middle}
 @keyframes s{to{transform:rotate(360deg)}}
 code{background:#eef0f4;padding:.05rem .3rem;border-radius:4px;font-size:.85em}
-`;
+header.top button{margin:0}
+.loading-bar{position:fixed;top:0;left:0;height:3px;background:#3b5bdb;animation:lb 1.2s ease-in-out infinite;z-index:10}
+@keyframes lb{0%{width:0;left:0}50%{width:60%;left:20%}100%{width:0;left:100%}}
+.page-loading{padding:3rem;text-align:center}
+fieldset{border:0;padding:0;margin:0}
 
-export interface AdminCtx {
-  csrf?: string;
-  userEmail?: string;
-  tenant?: Tenant;
-  role?: Role;
-  section?: "dashboard" | "articles" | "design" | "settings";
-  flash?: string;
-  error?: string;
-}
-
-export function csrfField(ctx: AdminCtx): Raw {
-  return ctx.csrf ? html`<input type="hidden" name="_csrf" value="${ctx.csrf}">` : raw("");
-}
-
-export function adminPage(title: string, ctx: AdminCtx, body: Raw): string {
-  const t = ctx.tenant;
-  const nav = t
-    ? html`
-        <a href="/admin/${t.slug}" class="${ctx.section === "dashboard" ? "on" : ""}">Dashboard</a>
-        <a href="/admin/${t.slug}/articles" class="${ctx.section === "articles" ? "on" : ""}">Articles</a>
-        <a href="/admin/${t.slug}/design" class="${ctx.section === "design" ? "on" : ""}">Design</a>
-        ${ctx.role === "owner" ? html`<a href="/admin/${t.slug}/settings" class="${ctx.section === "settings" ? "on" : ""}">Settings</a>` : ""}
-        <a href="/s/${t.slug}" target="_blank">View site ↗</a>`
-    : "";
-  return `<!doctype html>${html`<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} · AICMS</title><style>${raw(CSS)}</style></head><body>
-<header class="top">
-  <a class="logo" href="/admin">AICMS</a>
-  ${t ? html`<strong>${t.name}</strong>` : ""}
-  ${nav}
-  <span class="sp"></span>
-  ${ctx.userEmail
-    ? html`<span class="muted" style="color:#9aa">${ctx.userEmail}${ctx.role ? ` · ${ctx.role}` : ""}</span>
-      <form method="post" action="/admin/logout" class="inline">${csrfField(ctx)}<button class="sm sec">Log out</button></form>`
-    : ""}
-</header>
-<main>
-${ctx.flash ? html`<div class="flash">${ctx.flash}</div>` : ""}
-${ctx.error ? html`<div class="flash err">${ctx.error}</div>` : ""}
-${body}
-</main></body></html>`}`;
-}
-
-export const statusBadge = (s: string) => html`<span class="badge b-${s}">${s}</span>`;

@@ -12,7 +12,8 @@ import { can, type Role } from "../tenancy.js";
  *   GET  /api/v1/articles/:id
  *   POST /api/v1/articles            { title, markdown | blocks, summary?, tags?, status? }
  *   POST /api/v1/ai/articles[?wait=1] { topic, instructions?, tone?, length?, publish?, designLook? }
- *   POST /api/v1/ai/themes[?wait=1]   { prompt, apply?, baseThemeId? }
+ *   POST /api/v1/ai/themes[?wait=1]   { prompt, apply?, baseThemeId?, palette? }
+ *        palette: text in any supported format, ["#hex", …] or { primary: "#hex", … }
  *   GET  /api/v1/jobs/:id
  */
 export function apiRouter(repo: Repo, ai: AiService) {

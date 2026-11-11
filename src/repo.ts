@@ -17,9 +17,13 @@ export interface TenantRow {
   domain: string | null;
   settings: string;
   active_theme_id: number | null;
+  /** Encrypted per-tenant LLM API key (see util/secrets.ts). Never leaves the repo/AI service. */
+  ai_api_key: string | null;
 }
-export interface Tenant extends Omit<TenantRow, "settings"> {
+export interface Tenant extends Omit<TenantRow, "settings" | "ai_api_key"> {
   settings: TenantSettings;
+  /** Whether the tenant has its own LLM API key stored. */
+  hasAiKey: boolean;
 }
 export interface UserRow {
   id: number;
@@ -75,7 +79,9 @@ export class Repo {
   // ---- tenants -------------------------------------------------------------
 
   private hydrate(row: TenantRow | undefined): Tenant | undefined {
-    return row && { ...row, settings: parseSettings(row.settings) };
+    if (!row) return undefined;
+    const { ai_api_key, settings, ...rest } = row;
+    return { ...rest, settings: parseSettings(settings), hasAiKey: !!ai_api_key };
   }
   tenantBySlug(slug: string) {
     return this.hydrate(one<TenantRow>(this.db, "SELECT * FROM tenants WHERE slug = ?", slug));
@@ -114,10 +120,18 @@ export class Repo {
     );
   }
 
+  /** Encrypted API key for the tenant's LLM provider, or null. */
+  tenantAiKey(tenantId: number): string | null {
+    return one<{ ai_api_key: string | null }>(this.db, "SELECT ai_api_key FROM tenants WHERE id = ?", tenantId)?.ai_api_key ?? null;
+  }
+  setTenantAiKey(tenantId: number, encrypted: string | null) {
+    run(this.db, "UPDATE tenants SET ai_api_key = ? WHERE id = ?", encrypted, tenantId);
+  }
+
   tenantsForUser(userId: number) {
-    return all<TenantRow & { role: Role }>(
+    return all<Omit<TenantRow, "ai_api_key"> & { role: Role }>(
       this.db,
-      "SELECT t.*, m.role FROM tenants t JOIN memberships m ON m.tenant_id = t.id WHERE m.user_id = ? ORDER BY t.name",
+      "SELECT t.id, t.slug, t.name, t.tagline, t.domain, t.settings, t.active_theme_id, m.role FROM tenants t JOIN memberships m ON m.tenant_id = t.id WHERE m.user_id = ? ORDER BY t.name",
       userId,
     );
   }

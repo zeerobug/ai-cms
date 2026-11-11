@@ -6,6 +6,8 @@ import { AiRefusalError } from "../src/ai/provider.js";
 import { blocksToMarkdown, markdownToBlocks, renderBlocks, renderInline } from "../src/content/blocks.js";
 import { aiArticlePublishDecision, aiThemeApplyDecision, TenantSettingsSchema } from "../src/tenancy.js";
 import { renderHome } from "../src/themes/render.js";
+import { config } from "../src/config.js";
+import { decryptSecret, encryptSecret, maskSecret } from "../src/util/secrets.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, ThemeSpecSchema } from "../src/themes/spec.js";
 
 test("markdown round-trips through blocks", () => {
@@ -140,4 +142,49 @@ test("AnthropicProvider sends structured-output request with fallbacks", async (
 test("AnthropicProvider surfaces refusals", async () => {
   const { client } = fakeClient({ stop_reason: "refusal", stop_details: { category: "cyber" }, parsed_output: null, usage: {} });
   await assert.rejects(new AnthropicProvider(client).writeArticle(articleReq), AiRefusalError);
+});
+
+test("secrets: encrypt/decrypt round-trip, wrong APP_SECRET fails closed", () => {
+  const enc = encryptSecret("sk-ant-abc123xyz");
+  assert.notEqual(enc, encryptSecret("sk-ant-abc123xyz"), "random IV");
+  assert.equal(decryptSecret(enc), "sk-ant-abc123xyz");
+  assert.equal(decryptSecret("not-encrypted"), null);
+  const saved = config.secret;
+  config.secret = "another-secret";
+  try {
+    assert.equal(decryptSecret(enc), null);
+  } finally {
+    config.secret = saved;
+  }
+  assert.equal(maskSecret("sk-ant-abc123xyz"), "sk-ant…3xyz");
+});
+
+test("parsePalette reads lists, CSS vars, JSON, GIMP and Coolors formats", async () => {
+  const { parsePalette } = await import("../src/themes/palette.js");
+  assert.deepEqual(parsePalette("#264653, #2A9D8F\n#fff rgb(233, 196, 106)").colors, ["#264653", "#2a9d8f", "#ffffff", "#e9c46a"]);
+  assert.deepEqual(parsePalette("264653-2a9d8f e9c46a").colors, ["#264653", "#2a9d8f", "#e9c46a"]);
+  const css = parsePalette(":root {\n  --color-primary: #0b6e99;\n  --bg: #f3f8fb; /* page */\n  --on-primary: #fff;\n  --extra: #123456;\n}");
+  assert.deepEqual(css.roles, { primary: "#0b6e99", background: "#f3f8fb", primaryText: "#ffffff" });
+  assert.equal(css.colors.length, 4);
+  assert.deepEqual(parsePalette('{"colors":{"primaryText":"#000000","accent":"#ff0000"}}').roles, { primaryText: "#000000", accent: "#ff0000" });
+  assert.deepEqual(parsePalette('[{"name":"Brand","hex":"#112233"},"#445566"]'), { colors: ["#112233", "#445566"], roles: { primary: "#112233" } });
+  assert.deepEqual(parsePalette("GIMP Palette\nName: Test\n#\n 38  70  83\tBackground\n255 255 255 Text").roles, { background: "#264653", text: "#ffffff" });
+  assert.deepEqual(parsePalette("https://coolors.co/264653-2a9d8f-e9c46a").colors, ["#264653", "#2a9d8f", "#e9c46a"]);
+  assert.deepEqual(parsePalette(["#abc", "nope"]).colors, ["#aabbcc"]);
+  assert.equal(parsePalette("no colors here <script>").colors.length, 0);
+});
+
+test("paletteToColors honours named roles and keeps text readable", async () => {
+  const { contrast, paletteToColors, parsePalette } = await import("../src/themes/palette.js");
+  const colors = paletteToColors(parsePalette("#264653 #2a9d8f #e9c46a #f4a261 #e76f51 #fdfcf8"), DEFAULT_THEME.colors);
+  assert.equal(colors.background, "#fdfcf8");
+  assert.ok(contrast(colors.text, colors.background) >= 4.5);
+  assert.ok(contrast(colors.primaryText, colors.primary) >= 3);
+  assert.ok(["#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"].includes(colors.primary));
+  // Mid-tone palette: background stays the base page color instead of a saturated color.
+  assert.equal(paletteToColors(parsePalette("#e76f51 #2a9d8f"), DEFAULT_THEME.colors).background, DEFAULT_THEME.colors.background);
+  const pinned = paletteToColors(parsePalette("primary: #000000\nbackground: #222222"), DEFAULT_THEME.colors);
+  assert.equal(pinned.primary, "#000000");
+  assert.equal(pinned.background, "#222222");
+  assert.ok(ThemeSpecSchema.shape.colors.safeParse(pinned).success);
 });

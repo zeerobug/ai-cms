@@ -103,11 +103,18 @@ export function openDb(file = config.dbPath): DB {
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  addColumnIfMissing(db, "tenants", "ai_api_key", "TEXT");
   // Jobs that were running when the process died can never finish.
   db.prepare(
     "UPDATE ai_jobs SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status IN ('queued','running')",
   ).run();
   return db;
+}
+
+/** Tiny forward-only migration for columns added after the first release. */
+function addColumnIfMissing(db: DB, table: string, column: string, type: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 /** Small typed helpers on top of node:sqlite. */

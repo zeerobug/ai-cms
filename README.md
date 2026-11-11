@@ -12,6 +12,7 @@ Each site (tenant) can:
 npm install
 npm run seed      # demo sites "demo" (AI may auto-publish) and "acme" (AI output needs review)
 npm run dev       # http://localhost:3000/admin  — admin@example.com / password123
+npm run build     # build the React admin for production (then `npm start`)
 ```
 
 Without an API key the app runs a **mock AI** (offline, gives placeholder text). To use Claude:
@@ -23,11 +24,11 @@ npm run dev
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AI_PROVIDER` | `anthropic` if a key is set, else `mock` | Which AI backend to use |
+| `AI_PROVIDER` | `anthropic` if a key is set, else `mock` | Platform default AI backend (each site can pick its own provider and API key in Settings) |
 | `AI_MODEL` | `claude-opus-5-5` | Default model for new sites (each site can override it) |
 | `DB_PATH` | `data/aicms.sqlite` | SQLite file |
 | `BASE_DOMAIN` | – | Turns on subdomain tenancy: `acme.example.com` → site `acme` |
-| `APP_SECRET` | random | Signs CSRF tokens; set it in production |
+| `APP_SECRET` | random | Signs CSRF tokens and encrypts sites' stored AI API keys; set it in production (changing it means keys must be re-entered) |
 | `PORT` | `3000` | |
 
 ## How it fits together
@@ -45,8 +46,10 @@ src/
   tenancy.ts          Roles, permissions, per-site settings schema, publish/apply decisions
   repo.ts             SQLite data access (every query is scoped by tenant_id)
   web/site.ts         Public sites: custom domain, subdomain or /s/<slug>
-  web/admin.ts        Admin UI (dashboard, articles, design, settings, members, API tokens)
+  web/admin-api.ts    JSON API behind the admin (dashboard, articles, design, settings, members, API tokens)
+  web/admin-spa.ts    Serves the React admin (Vite dev middleware / built files)
   web/api.ts          REST API with bearer tokens for each site
+admin/                React admin (React Router, one lazily loaded chunk per page)
 ```
 
 ### Template system
