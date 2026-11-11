@@ -23,6 +23,8 @@ export interface ArticleView {
   tags: string[];
   publishedAt: string | null;
   source: "human" | "ai";
+  /** Cover image shown on the article page and on cards. */
+  image: { url: string; alt: string } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +110,13 @@ a{color:var(--primary)}
 .card:hover{transform:translateY(-2px)}
 .card h2,.card h3{margin:.2em 0 .35em;font-size:calc(1rem * var(--scale));color:var(--text)}
 .card p{margin:0;color:var(--muted);font-size:.95rem}
+.card-img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:calc(var(--radius)*.7);margin-bottom:.8rem;background:var(--border)}
+.card-flat .card-img{border-radius:var(--radius)}
+.home-list .card{display:grid;grid-template-columns:minmax(0,1fr);column-gap:1.2rem}
+.home-list .card:has(.card-img){grid-template-columns:12rem minmax(0,1fr)}
+.home-list .card-img{grid-row:1/span 4;margin:0}
+.home-minimal .card-img{display:none}
+.home-magazine .posts>.card:first-child .card-img{aspect-ratio:21/9}
 .meta{color:var(--muted);font-size:.8rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
 .tag{display:inline-block;color:var(--primary);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;text-decoration:none}
 
@@ -127,6 +136,7 @@ a{color:var(--primary)}
 .article{padding:calc(var(--gap)*2) 0 calc(var(--gap)*3)}
 .article header h1{margin:.3em 0 .3em}
 .article .lede{font-size:1.2rem;color:var(--muted);margin:0 0 1rem}
+.cover{margin:1.5rem 0 0}.cover img{display:block;width:100%;max-height:34rem;object-fit:cover;border-radius:var(--radius)}
 .prose{max-width:42rem}
 .art-classic .article{max-width:46rem;margin:0 auto}
 .art-wide .prose{max-width:none}
@@ -154,6 +164,7 @@ a{color:var(--primary)}
 @media (max-width:860px){
   .home-grid .posts,.home-cards .posts,.home-magazine .posts{grid-template-columns:1fr}
   .art-sidebar .article-body{grid-template-columns:1fr}.toc{display:none}
+  .home-list .card:has(.card-img){grid-template-columns:minmax(0,1fr)}.home-list .card-img{grid-row:auto;margin-bottom:.8rem}
   .nav{margin-left:0}
 }
 `;
@@ -224,8 +235,14 @@ function meta(a: ArticleView, t: ThemeSpec): Raw {
   </div>`;
 }
 
+function coverUrl(a: ArticleView): string | null {
+  return a.image ? safeUrl(a.image.url) : null;
+}
+
 function card(site: SiteInfo, t: ThemeSpec, a: ArticleView): Raw {
+  const img = coverUrl(a);
   return html`<a class="card" href="${site.base}/a/${a.slug}">
+    ${img ? html`<img class="card-img" src="${img}" alt="" loading="lazy">` : ""}
     ${a.tags[0] ? html`<span class="tag">${a.tags[0]}</span>` : ""}
     <h2>${a.title}</h2>
     ${t.layout.showSummaries && a.summary ? html`<p>${a.summary}</p>` : ""}
@@ -281,6 +298,7 @@ export function renderArticle(site: SiteInfo, theme: ThemeSpec, a: ArticleView, 
       <h1>${a.title}</h1>
       ${a.summary ? html`<p class="lede">${a.summary}</p>` : ""}
       ${meta(a, theme)}
+      ${coverUrl(a) ? html`<figure class="cover"><img src="${coverUrl(a)}" alt="${a.image!.alt}"></figure>` : ""}
     </header>
     <div class="article-body"><div class="prose">${raw(renderBlocks(a.blocks))}</div>${toc}</div>
   </article></div>`;

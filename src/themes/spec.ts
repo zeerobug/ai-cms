@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isImageUrl } from "../content/media.js";
 
 /**
  * THE TEMPLATE SYSTEM
@@ -85,7 +86,8 @@ export const ThemeSpecSchema = z.object({
     subtitle: z.string().max(300),
     style: z.enum(HERO_STYLES),
     align: z.enum(["left", "center"]),
-    imageUrl: z.string().max(500),
+    /** https URL or an uploaded/AI image (/media/...); see isImageUrl. */
+    imageUrl: z.string().max(500).refine((u) => u === "" || isImageUrl(u), "must be an https or /media/ image URL"),
   }),
   decoration: z.object({
     background: z.enum(BACKGROUNDS),
@@ -143,7 +145,7 @@ export const AiThemeSchema = z.object({
     subtitle: z.string(),
     style: z.enum(HERO_STYLES),
     align: z.enum(["left", "center"]),
-    imageUrl: z.string().describe("https image URL for the 'image' hero style, otherwise empty"),
+    imageUrl: z.string().describe("Image URL for the 'image' hero style (keep the current one unless asked to change it), otherwise empty"),
   }),
   decoration: z.object({ background: z.enum(BACKGROUNDS), linkStyle: z.enum(LINK_STYLES) }),
   nav: z.array(z.object({ label: z.string(), href: z.string() })),
@@ -218,7 +220,7 @@ export function normalizeTheme(input: unknown, base: ThemeSpec): ThemeSpec {
       subtitle: str(h.subtitle, 300, base.hero.subtitle),
       style: pick(h.style, HERO_STYLES, base.hero.style),
       align: pick(h.align, ["left", "center"] as const, base.hero.align),
-      imageUrl: typeof h.imageUrl === "string" && /^https:\/\//.test(h.imageUrl) ? h.imageUrl.slice(0, 500) : "",
+      imageUrl: isImageUrl(h.imageUrl) ? h.imageUrl : "",
     },
     decoration: {
       background: pick(d.background, BACKGROUNDS, base.decoration.background),

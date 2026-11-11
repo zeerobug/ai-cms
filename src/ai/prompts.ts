@@ -42,13 +42,30 @@ What the fields do:
   grid/cards/magazine; article layout (classic | wide | sidebar [with table of contents]); toggles for
   summaries, dates and reading time on cards.
 - hero: optional banner on the home page (plain | gradient | band | image) with title/subtitle; leave
-  title/subtitle empty to use the site name and tagline. Only use "image" with a real https URL the user gave.
+  title/subtitle empty to use the site name and tagline. Only use "image" with an image URL the user gave
+  or the current theme's imageUrl (keep that unless asked to change or remove it); never invent URLs.
 - decoration: background texture (none | dots | grid | gradient | paper), linkStyle (underline | color | highlight).
 - nav: up to 8 header links; use "/" for home and "/tag/<tag>" for tag pages; keep existing links unless asked.
 - footer: text and whether to show "Powered by" credit.
 
 Start from the current theme and change what the request implies; a request about one aspect (e.g.
 "make it darker") should leave unrelated choices alone. Give the theme a short evocative name.`;
+
+// Image prompts (sent to the image model; Claude itself doesn't generate images).
+
+const IMAGE_RULES = "No text, letters, captions, logos or watermarks anywhere in the image.";
+
+export function articleImagePrompt(a: { title: string; summary: string; siteName: string }): string {
+  return `Editorial cover image for an article titled "${a.title}" on the website "${a.siteName}". ` +
+    (a.summary ? `The article: ${a.summary} ` : "") +
+    `A single clear subject, natural lighting, high quality, suitable as a wide header image. ${IMAGE_RULES}`;
+}
+
+export function heroImagePrompt(site: { name: string; tagline: string }, brief: string): string {
+  return `Wide atmospheric banner image for the home page of the website "${site.name}"` +
+    (site.tagline ? ` (${site.tagline})` : "") +
+    `. Visual direction: ${brief}. Calm composition with space for a headline overlay, works well darkened. ${IMAGE_RULES}`;
+}
 
 export function articleUserPrompt(req: ArticleRequest): string {
   return [

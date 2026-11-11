@@ -69,7 +69,7 @@ function AiThemeForm({ themes }: { themes: ThemeSummary[] }) {
     const fd = new FormData(e.currentTarget);
     run(async () => {
       const { jobId } = await api<{ jobId: number }>(`${tapi(tenant.slug)}/ai/theme`, {
-        body: { prompt: field(fd, "prompt"), baseThemeId: Number(field(fd, "baseThemeId")) || undefined, palette: field(fd, "palette"), apply: checked(fd, "apply") },
+        body: { prompt: field(fd, "prompt"), baseThemeId: Number(field(fd, "baseThemeId")) || undefined, palette: field(fd, "palette"), apply: checked(fd, "apply"), heroImage: checked(fd, "heroImage") },
       });
       navigate(`/${tenant.slug}/jobs/${jobId}`);
     });
@@ -81,6 +81,7 @@ function AiThemeForm({ themes }: { themes: ThemeSummary[] }) {
       <textarea name="prompt" required minLength={3} placeholder="e.g. A calm Japanese-inspired look with lots of whitespace, serif headings and a muted green palette. Magazine-style homepage." />
       <div className="row"><div><label>Start from</label><BaseThemeSelect themes={themes} /></div></div>
       <PaletteField hint="The AI builds the colors from it; colors named after a role (primary, background, …) are kept exactly." />
+      {tenant.ai.imageProvider && <label className="check"><input type="checkbox" name="heroImage" /> Also generate a hero image for the home page</label>}
       <label className="check">
         <input type="checkbox" name="apply" disabled={!tenant.ai.canAutoApply} /> Apply to the live site immediately
         {!tenant.ai.canAutoApply && <span className="muted">(disabled by site settings — you can apply it manually after reviewing)</span>}

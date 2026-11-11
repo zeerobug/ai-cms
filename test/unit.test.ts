@@ -7,7 +7,9 @@ import { OpenAIProvider } from "../src/ai/openai.js";
 import { AiRefusalError } from "../src/ai/provider.js";
 import { blocksToMarkdown, markdownToBlocks, renderBlocks, renderInline } from "../src/content/blocks.js";
 import { aiArticlePublishDecision, aiThemeApplyDecision, TenantSettingsSchema } from "../src/tenancy.js";
-import { renderHome } from "../src/themes/render.js";
+import { renderArticle, renderHome } from "../src/themes/render.js";
+import { MockProvider } from "../src/ai/mock.js";
+import { isImageUrl, sniffImage } from "../src/content/media.js";
 import { config } from "../src/config.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../src/util/secrets.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, ThemeSpecSchema } from "../src/themes/spec.js";
@@ -232,4 +234,57 @@ test("paletteToColors honours named roles and keeps text readable", async () => 
   assert.equal(pinned.primary, "#000000");
   assert.equal(pinned.background, "#222222");
   assert.ok(ThemeSpecSchema.shape.colors.safeParse(pinned).success);
+});
+
+test("sniffImage recognises raster formats by their bytes and rejects everything else", async () => {
+  const png = (await new MockProvider().generateImage({ prompt: "a lighthouse", aspect: "landscape" })).value.data;
+  assert.deepEqual(sniffImage(png), { mime: "image/png", ext: "png" });
+  assert.equal(sniffImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))?.ext, "jpg");
+  assert.equal(sniffImage(Buffer.from("GIF89a......"))?.ext, "gif");
+  assert.equal(sniffImage(Buffer.from("RIFF\0\0\0\0WEBPVP8 "))?.ext, "webp");
+  assert.equal(sniffImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')), null);
+  assert.equal(sniffImage(Buffer.alloc(0)), null);
+});
+
+test("isImageUrl allows https and own media paths only, and nothing that can break out of CSS", () => {
+  assert.ok(isImageUrl("https://images.example.com/a.jpg?w=1200"));
+  assert.ok(isImageUrl("/media/demo/AbCdEfGhIjKlMn_-.webp"));
+  for (const bad of ["http://x.com/a.png", "javascript:alert(1)", "/media/demo/../x.png", "/admin/api/x", "https://x.com/a.png'),url(x", 'https://x.com/"a', "https://x.com/a b"])
+    assert.equal(isImageUrl(bad), false, bad);
+});
+
+test("hero and cover images render; unsafe hero URLs are dropped", () => {
+  const media = "/media/demo/AbCdEfGhIjKlMn_-.png";
+  const theme = normalizeTheme({ hero: { enabled: true, style: "image", imageUrl: media } }, DEFAULT_THEME);
+  assert.equal(theme.hero.imageUrl, media);
+  assert.ok(renderHome({ name: "S", tagline: "", base: "" }, theme, []).includes(`url('${media}')`));
+
+  const injected = normalizeTheme({ hero: { enabled: true, style: "image", imageUrl: "https://x.com/a.png');color:red;x:url('" } }, DEFAULT_THEME);
+  assert.equal(injected.hero.imageUrl, "");
+  assert.equal(injected.hero.style, "gradient");
+
+  const article = { slug: "a", title: "T", summary: "", seoDescription: "", blocks: [], tags: [], publishedAt: null, source: "human" as const, image: { url: media, alt: 'A "quoted" lighthouse' } };
+  const home = renderHome({ name: "S", tagline: "", base: "" }, DEFAULT_THEME, [article]);
+  assert.ok(home.includes(`<img class="card-img" src="${media}"`));
+  const page = renderArticle({ name: "S", tagline: "", base: "" }, DEFAULT_THEME, article);
+  assert.ok(page.includes(`<figure class="cover"><img src="${media}" alt="A &quot;quoted&quot; lighthouse">`));
+});
+
+test("OpenAIProvider generates images with the configured image model and size", async () => {
+  const calls: unknown[] = [];
+  const client = {
+    images: {
+      generate: async (p: unknown) => {
+        calls.push(p);
+        return { data: [{ b64_json: Buffer.from("RIFF\0\0\0\0WEBPVP8 ").toString("base64") }], usage: { input_tokens: 5, output_tokens: 99 } };
+      },
+    },
+  } as unknown as OpenAI;
+  const res = await new OpenAIProvider(client).generateImage({ prompt: "a fox", aspect: "portrait" });
+  assert.equal(sniffImage(res.value.data)?.ext, "webp");
+  assert.deepEqual(res.usage, { model: config.openaiImageModel, inputTokens: 5, outputTokens: 99 });
+  const p = calls[0] as any;
+  assert.equal(p.model, config.openaiImageModel);
+  assert.equal(p.size, "1024x1536");
+  assert.equal(p.prompt, "a fox");
 });

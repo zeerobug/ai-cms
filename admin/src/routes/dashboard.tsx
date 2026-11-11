@@ -40,6 +40,7 @@ function AiArticleForm() {
           publish: checked(fd, "publish"),
           designLook,
           designBrief: field(fd, "designBrief"),
+          coverImage: checked(fd, "coverImage"),
         },
       });
       navigate(`/${tenant.slug}/jobs/${jobId}`);
@@ -69,6 +70,11 @@ function AiArticleForm() {
         <input type="checkbox" checked={designLook} onChange={(e) => setDesignLook(e.target.checked)} /> Also design a custom look for this article
       </label>
       {designLook && <input name="designBrief" placeholder="Optional design brief, e.g. warm, rustic, handwritten feel" />}
+      {tenant.ai.imageProvider ? (
+        <label className="check"><input type="checkbox" name="coverImage" /> Generate a cover image</label>
+      ) : (
+        <p className="muted">Cover images: Claude only writes text, so AI images need OpenAI (choose it in Settings). You can still upload a cover in the editor.</p>
+      )}
       <p>
         <button disabled={busy}>Write it</button>{" "}
         {tenant.ai.provider === "mock" && (

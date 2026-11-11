@@ -4,7 +4,8 @@ import { ZodError } from "zod";
 import { PolicyError, type AiService } from "../ai/service.js";
 import { csrfToken as csrfFor, hashPassword, SESSION_COOKIE, setSessionCookie, verifyPassword } from "../auth.js";
 import { blocksToMarkdown, markdownToBlocks, slugify } from "../content/blocks.js";
-import { safeJson, type ArticleRow, type JobRow, type Repo, type Tenant } from "../repo.js";
+import { isImageUrl, MAX_IMAGE_BYTES, mediaUrl, sniffImage } from "../content/media.js";
+import { safeJson, type ArticleImage, type ArticleRow, type JobRow, type MediaRow, type Repo, type Tenant } from "../repo.js";
 import { AI_PROVIDERS, atLeast, can, ROLES, TenantSettingsSchema, type Role } from "../tenancy.js";
 import { MAX_PALETTE_INPUT, paletteToColors, parsePalette } from "../themes/palette.js";
 import { normalizeTheme } from "../themes/spec.js";
@@ -17,6 +18,7 @@ import {
   type Dashboard,
   type JobDetail,
   type JobSummary,
+  type MediaItem,
   type Permission,
   type SessionInfo,
   type SettingsData,
@@ -63,7 +65,9 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
 
   r.use((req, _res, next) => {
     // HTML forms can only POST, so requiring JSON on POST/PUT blocks cross-site form submissions.
-    if ((req.method === "POST" || req.method === "PUT") && !req.is("application/json"))
+    // Image uploads send the raw file as image/* (forms can't send that type either).
+    const imageUpload = req.method === "POST" && /^\/t\/[^/]+\/media\/?$/.test(req.path) && req.is("image/*");
+    if ((req.method === "POST" || req.method === "PUT") && !req.is("application/json") && !imageUpload)
       return next(new HttpError(415, "Expected application/json"));
     next();
   });
@@ -180,6 +184,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
       length: (["short", "medium", "long"] as const).find((l) => l === b.length),
       publish: b.publish === true,
       designLook: b.designLook === true ? brief || true : false,
+      coverImage: b.coverImage === true,
     });
     res.status(202).json({ jobId });
   });
@@ -191,6 +196,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
       apply: b.apply === true,
       baseThemeId: num(b.baseThemeId) || undefined,
       palette: str(b.palette).trim() || undefined,
+      heroImage: b.heroImage === true,
     });
     res.status(202).json({ jobId });
   });
@@ -226,7 +232,7 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     };
     if (req.params.id === "new") {
       if (!can(role, "article.create")) throw new HttpError(403, "Your role can't create articles.");
-      const body: ArticleDetail = { id: null, title: "", slug: "", summary: "", seoDescription: "", tags: [], status: "draft", source: "human", aiPrompt: null, themeId: null, markdown: "", editable: true, ...base };
+      const body: ArticleDetail = { id: null, title: "", slug: "", summary: "", seoDescription: "", tags: [], status: "draft", source: "human", aiPrompt: null, themeId: null, imageUrl: "", imageAlt: "", markdown: "", editable: true, ...base };
       return void res.json(body);
     }
     const a = findArticle(res, req.params.id);
@@ -242,6 +248,8 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
       source: a.source,
       aiPrompt: a.ai_prompt,
       themeId: a.theme_id,
+      imageUrl: a.image_url,
+      imageAlt: a.image_alt,
       markdown: blocksToMarkdown(view.blocks),
       editable: canEditArticle(res, a),
       ...base,
@@ -299,7 +307,8 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
 
   t.get("/themes/:id", need("design.manage"), (req, res) => {
     const row = findTheme(res, req.params.id);
-    const body: ThemeDetail = { id: row.id, name: row.name, spec: repo.themeSpec(row) };
+    const spec = repo.themeSpec(row);
+    const body: ThemeDetail = { id: row.id, name: row.name, spec, heroImageUrl: spec.hero.imageUrl };
     res.json(body);
   });
 
@@ -333,6 +342,58 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
     if (apply) repo.activateTheme(tn.id, id);
     const n = palette.colors.length;
     res.status(201).json({ id, message: `Theme “${spec.name}” created from ${n} color${n === 1 ? "" : "s"}${apply ? " and applied" : ""}.` });
+  });
+
+  /** Body: { url } sets the hero image (and switches the hero on, "image" style); { url: null } removes it. */
+  t.put("/themes/:id/hero-image", need("design.manage"), (req, res) => {
+    const tn = tenantOf(res);
+    const row = findTheme(res, req.params.id);
+    const url = req.body?.url;
+    if (url !== null && !isImageUrl(url)) throw new HttpError(400, "The hero image must be an https URL or an uploaded image.");
+    const spec = repo.themeSpec(row);
+    spec.hero = url
+      ? { ...spec.hero, enabled: true, style: "image", imageUrl: url }
+      : { ...spec.hero, imageUrl: "", style: spec.hero.style === "image" ? "gradient" : spec.hero.style };
+    repo.updateTheme(tn.id, row.id, normalizeTheme(spec, spec));
+    res.json({ message: url ? "Hero image set." : "Hero image removed." });
+  });
+
+  // ---- media library (images for heroes and articles) ----------------------
+
+  t.get("/media", need("article.create"), (_req, res) => {
+    const tn = tenantOf(res);
+    res.json(repo.mediaList(tn.id).map((m) => mediaItemFor(tn, m)));
+  });
+
+  /** Raw image body (Content-Type: image/*), optional ?alt=. The format is checked from the bytes. */
+  t.post("/media", need("article.create"), express.raw({ type: "image/*", limit: MAX_IMAGE_BYTES }), (req, res) => {
+    const tn = tenantOf(res);
+    const data = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!data?.length) throw new HttpError(400, "Send the image file as the request body.");
+    const type = sniffImage(data);
+    if (!type) throw new HttpError(415, "Unsupported image. Use PNG, JPEG, WebP or GIF.");
+    const m = repo.createMedia(tn.id, { data, type, alt: str(req.query.alt), source: "upload", userId: res.locals.user!.id });
+    res.status(201).json(mediaItemFor(tn, m));
+  });
+
+  /** Body: ImageGenerateInput. Waits for the image (subject to the site's AI policy and image quota). */
+  t.post("/media/generate", need("article.create"), async (req, res) => {
+    const tn = tenantOf(res);
+    const b = req.body ?? {};
+    const m = await ai.generateImage(tn, actor(res), {
+      prompt: str(b.prompt),
+      aspect: (["landscape", "square", "portrait"] as const).find((a) => a === b.aspect),
+      alt: str(b.alt) || undefined,
+    });
+    res.status(201).json(mediaItemFor(tn, m));
+  });
+
+  t.delete("/media/:id", need("media.delete"), (req, res) => {
+    const tn = tenantOf(res);
+    const m = repo.media(tn.id, num(req.params.id));
+    if (!m) throw new HttpError(404, "Image not found.");
+    repo.deleteMedia(tn.id, m.id);
+    res.json({ message: "Image deleted." });
   });
 
   t.post("/themes/:id/activate", need("design.manage"), (req, res) => {
@@ -432,6 +493,8 @@ export function adminApiRouter(repo: Repo, ai: AiService) {
   r.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof HttpError || err instanceof PolicyError) return void res.status(err.status).json({ error: err.message });
     if (err instanceof ZodError) return void res.status(400).json({ error: "Please check the form: " + err.issues.map((i) => i.message).join("; ") });
+    if ((err as { type?: string })?.type === "entity.too.large")
+      return void res.status(413).json({ error: `That file is too large (${MAX_IMAGE_BYTES / 1024 / 1024} MB max).` });
     console.error("[admin-api]", err);
     res.status(500).json({ error: "Internal error." });
   });
@@ -456,11 +519,22 @@ export function tenantInfo(tn: Tenant, role: Role, ai: AiService): TenantInfo {
       provider: ai.providerNameFor(tn),
       canAutoPublish: s.articles.autoPublish && can(role, "article.create") && atLeast(role, s.articles.minRoleToAutoPublish),
       canAutoApply: s.themes.autoApply && atLeast(role, s.themes.minRoleToAutoApply),
+      imageProvider: ai.imageProviderNameFor(tn),
       defaultTone: s.articles.defaultTone,
       defaultLength: s.articles.defaultLength,
     },
   };
 }
+
+const mediaItemFor = (tn: Tenant, m: MediaRow): MediaItem => ({
+  id: m.id,
+  url: mediaUrl(tn.slug, m.file),
+  alt: m.alt,
+  source: m.source,
+  prompt: m.prompt,
+  size: m.size,
+  createdAt: m.created_at,
+});
 
 const articleSummary = (a: ArticleRow): ArticleSummary => ({ id: a.id, title: a.title, status: a.status, source: a.source, updatedAt: a.updated_at });
 
@@ -476,6 +550,9 @@ function readArticle(body: Partial<ArticleInput> | undefined, role: Role) {
   let status = STATUSES.find((s) => s === b.status) ?? "draft";
   if (status === "published" && !can(role, "article.publish")) status = "review";
   const tags = Array.isArray(b.tags) ? b.tags.map(String) : str(b.tags).split(",");
+  const imageUrl = str(b.imageUrl).trim();
+  if (imageUrl && !isImageUrl(imageUrl)) throw new HttpError(400, "The cover image must be an https URL or an uploaded image.");
+  const image: ArticleImage | null = imageUrl ? { url: imageUrl, alt: str(b.imageAlt).slice(0, 300) } : null;
   return {
     title: str(b.title).trim() || "Untitled",
     slug: str(b.slug).trim(),
@@ -485,5 +562,6 @@ function readArticle(body: Partial<ArticleInput> | undefined, role: Role) {
     tags,
     status,
     themeId: num(b.themeId) || null,
+    image,
   };
 }

@@ -12,6 +12,7 @@ const aiProvider = (process.env.AI_PROVIDER ??
       ? "openai"
       : "mock")) as "anthropic" | "openai" | "mock";
 const openaiModel = process.env.OPENAI_MODEL ?? "gpt-5.5";
+const openaiImageModel = process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2";
 
 /**
  * Runtime configuration. Everything can be overridden with environment variables.
@@ -43,5 +44,12 @@ export const config = {
   defaultModel: process.env.AI_MODEL ?? (aiProvider === "openai" ? openaiModel : "claude-opus-5-5"),
   /** Model used for OpenAI requests when a site's model setting is a Claude model. */
   openaiModel,
+  /** OpenAI model for AI images (Claude only produces text, so images always come from OpenAI or the mock). */
+  openaiImageModel,
+  /**
+   * Whether sites on a text-only provider (Claude) can still generate images with the platform's
+   * OpenAI key.
+   */
+  platformOpenAiImages: !!process.env.OPENAI_API_KEY,
   secureCookies: process.env.NODE_ENV === "production",
 };

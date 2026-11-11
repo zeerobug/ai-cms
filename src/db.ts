@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Images (uploads and AI-generated), served at /media/<tenant-slug>/<file>.
+CREATE TABLE IF NOT EXISTS media (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  file TEXT NOT NULL UNIQUE,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  alt TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL CHECK (source IN ('upload','ai')),
+  prompt TEXT,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_tenant ON media(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_articles_tenant_status ON articles(tenant_id, status, published_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_tenant ON ai_jobs(tenant_id, created_at);
 `;
@@ -104,6 +120,9 @@ export function openDb(file = config.dbPath): DB {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
   addColumnIfMissing(db, "tenants", "ai_api_key", "TEXT");
+  // Article cover image (https URL or /media/... path) and its alt text.
+  addColumnIfMissing(db, "articles", "image_url", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "articles", "image_alt", "TEXT NOT NULL DEFAULT ''");
   // Jobs that were running when the process died can never finish.
   db.prepare(
     "UPDATE ai_jobs SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status IN ('queued','running')",

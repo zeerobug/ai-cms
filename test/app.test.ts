@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { MockProvider } from "../src/ai/mock.js";
 import { createApp } from "../src/app.js";
+import { config } from "../src/config.js";
 import { hashPassword } from "../src/auth.js";
 import { markdownToBlocks } from "../src/content/blocks.js";
 import { openDb } from "../src/db.js";
@@ -16,7 +17,8 @@ const { app, repo, ai } = createApp({
   provider: new MockProvider(),
   providerFactory: (name, apiKey) => {
     factoryCalls.push({ name, apiKey });
-    return new MockProvider();
+    // Like the real Claude provider, "anthropic" here can't generate images.
+    return name === "anthropic" ? Object.assign(new MockProvider(), { generateImage: undefined }) : new MockProvider();
   },
 });
 let base = "";
@@ -315,4 +317,132 @@ test("tenant LLM provider and API key: stored encrypted, used for jobs, platform
   const res = await post("/t/byok/ai/article", s, { topic: "broken key" });
   assert.equal(res.status, 409);
   assert.match((await res.json()).error, /can't be decrypted/);
+});
+
+// ---- images ------------------------------------------------------------------
+
+const PNG = (await new MockProvider().generateImage({ prompt: "fixture", aspect: "square" })).value.data;
+
+function uploadImage(tenant: string, s: Session, body: Uint8Array | string, type = "image/png", alt = "") {
+  return fetch(`${base}/admin/api/t/${tenant}/media${alt ? `?alt=${encodeURIComponent(alt)}` : ""}`, {
+    method: "POST",
+    headers: { cookie: s.cookie, "x-csrf-token": s.csrf, "content-type": type },
+    body: body as BodyInit,
+  });
+}
+
+test("images: upload, serve publicly on every host, reject non-images, list and delete", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const res = await uploadImage("open", s, PNG, "image/png", "A gradient");
+  assert.equal(res.status, 201, await res.clone().text());
+  const item = await res.json();
+  assert.match(item.url, /^\/media\/open\/[A-Za-z0-9_-]{16}\.png$/);
+  assert.equal(item.alt, "A gradient");
+  assert.equal(item.source, "upload");
+
+  const file = await fetch(base + item.url);
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("content-type"), "image/png");
+  assert.equal(file.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual(new Uint8Array(await file.arrayBuffer()), new Uint8Array(PNG));
+  assert.equal((await getWithHost(item.url, "open.example.com")).status, 200, "works on custom domains too");
+
+  // The declared type isn't trusted: an SVG (or anything else) sent as image/png is refused.
+  const svg = await uploadImage("open", s, "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
+  assert.equal(svg.status, 415);
+  assert.equal((await uploadImage("open", s, PNG, "text/plain")).status, 415, "non-image content types still need JSON");
+  assert.equal((await uploadImage("open", { cookie: s.cookie, csrf: "nope" }, PNG)).status, 403, "CSRF applies to uploads");
+  const big = await uploadImage("open", s, new Uint8Array(9 * 1024 * 1024));
+  assert.equal(big.status, 413);
+
+  const list = await getJson("/t/open/media", s);
+  assert.ok(list.some((m: { id: number }) => m.id === item.id));
+  assert.equal((await call("DELETE", `/t/open/media/${item.id}`, s)).status, 200);
+  assert.equal((await fetch(base + item.url)).status, 404);
+});
+
+test("images are tenant-isolated", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const item = await (await uploadImage("strict", s, PNG)).json();
+  assert.equal((await fetch(base + item.url)).status, 200);
+  assert.equal((await fetch(base + item.url.replace("/strict/", "/open/"))).status, 404, "file only resolves under its own tenant");
+  assert.equal((await call("DELETE", `/t/open/media/${item.id}`, s)).status, 404, "ids from another tenant don't resolve");
+  assert.ok(!(await getJson("/t/open/media", s)).some((m: { id: number }) => m.id === item.id));
+  const outsider = await login("out@x.com", "pw-out-1");
+  assert.equal((await uploadImage("open", outsider, PNG)).status, 403);
+  const author = await login("author@x.com", "pw-author-1");
+  assert.equal((await call("DELETE", `/t/strict/media/${item.id}`, author)).status, 403);
+});
+
+test("images: AI generation stores into the library and respects the monthly limit", async () => {
+  const t = repo.createTenant({ slug: "pics", name: "Pics", ownerId: users.owner });
+  repo.updateTenant(t.id, { name: t.name, tagline: "", domain: null, settings: TenantSettingsSchema.parse({ ai: { images: { monthlyLimit: 1 } } }) });
+  const s = await login("owner@x.com", "pw-owner-1");
+  assert.equal((await getJson("/t/pics", s)).ai.imageProvider, "mock");
+  const res = await post("/t/pics/media/generate", s, { prompt: "a misty harbour at dawn", aspect: "landscape", alt: "Harbour" });
+  assert.equal(res.status, 201, await res.clone().text());
+  const item = await res.json();
+  assert.equal(item.source, "ai");
+  assert.equal(item.prompt, "a misty harbour at dawn");
+  assert.equal((await fetch(base + item.url)).headers.get("content-type"), "image/png");
+  const again = await post("/t/pics/media/generate", s, { prompt: "another one" });
+  assert.equal(again.status, 429);
+  assert.equal((await post("/t/pics/media/generate", s, { prompt: "" })).status, 400);
+});
+
+test("articles: cover image from upload or AI, shown on the article and on cards", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const item = await (await uploadImage("open", s, PNG)).json();
+  const created = await post("/t/open/articles", s, { title: "With a cover", markdown: "Body", status: "published", imageUrl: item.url, imageAlt: "Cover alt" });
+  assert.equal(created.status, 201);
+  const { id } = await created.json();
+  const detail = await getJson(`/t/open/articles/${id}`, s);
+  assert.equal(detail.imageUrl, item.url);
+  assert.equal(detail.imageAlt, "Cover alt");
+  const page = await (await fetch(`${base}/s/open/a/with-a-cover`)).text();
+  assert.ok(page.includes(`<img src="${item.url}" alt="Cover alt">`));
+  assert.ok((await (await fetch(`${base}/s/open`)).text()).includes(`class="card-img" src="${item.url}"`));
+
+  const bad = await call("PUT", `/t/open/articles/${id}`, s, { ...detail, imageUrl: "javascript:alert(1)" });
+  assert.equal(bad.status, 400);
+  assert.equal((await call("PUT", `/t/open/articles/${id}`, s, { ...detail, imageUrl: "" })).status, 200);
+  assert.equal((await getJson(`/t/open/articles/${id}`, s)).imageUrl, "");
+
+  const result = jobResult(open.id, await runJob("/t/open/ai/article", s, { topic: "lighthouses of brittany", publish: true, coverImage: true }));
+  assert.match(result.imageUrl, /^\/media\/open\//);
+  assert.ok((await (await fetch(`${base}/s/open/a/${result.slug}`)).text()).includes(`<figure class="cover"><img src="${result.imageUrl}"`));
+});
+
+test("themes: hero image set from the library or by the AI theme job", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const item = await (await uploadImage("open", s, PNG)).json();
+  const active = repo.tenantById(open.id)!.active_theme_id!;
+  assert.equal((await call("PUT", `/t/open/themes/${active}/hero-image`, s, { url: item.url })).status, 200);
+  assert.equal((await getJson(`/t/open/themes/${active}`, s)).heroImageUrl, item.url);
+  const home = await (await fetch(`${base}/s/open`)).text();
+  assert.ok(home.includes("hero-image") && home.includes(`url('${item.url}')`));
+  assert.equal((await call("PUT", `/t/open/themes/${active}/hero-image`, s, { url: "https://x.com/a.png');x:url('" })).status, 400);
+  assert.equal((await call("PUT", `/t/open/themes/${active}/hero-image`, s, { url: null })).status, 200);
+  assert.ok(!(await (await fetch(`${base}/s/open`)).text()).includes(item.url));
+
+  const result = jobResult(open.id, await runJob("/t/open/ai/theme", s, { prompt: "sunny seaside", heroImage: true }));
+  const spec = repo.themeSpec(repo.theme(open.id, result.themeId));
+  assert.equal(spec.hero.style, "image");
+  assert.match(spec.hero.imageUrl, /^\/media\/open\//);
+});
+
+test("images: sites on a text-only provider (Claude) get a clear error, and AI articles still succeed", { skip: config.platformOpenAiImages && "OPENAI_API_KEY is set" }, async () => {
+  const t = repo.createTenant({ slug: "claude-only", name: "Claude only", ownerId: users.owner });
+  repo.updateTenant(t.id, { name: t.name, tagline: "", domain: null, settings: TenantSettingsSchema.parse({ ai: { provider: "anthropic" } }) });
+  const s = await login("owner@x.com", "pw-owner-1");
+  assert.equal((await getJson("/t/claude-only", s)).ai.imageProvider, null);
+  const res = await post("/t/claude-only/media/generate", s, { prompt: "a forest" });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /Claude only writes text/);
+  assert.equal((await uploadImage("claude-only", s, PNG)).status, 201, "uploads always work");
+
+  const result = jobResult(t.id, await runJob("/t/claude-only/ai/article", s, { topic: "mushroom foraging", coverImage: true }));
+  assert.equal(result.imageUrl, null);
+  assert.match(result.message, /Cover image skipped/);
+  assert.ok(repo.article(t.id, result.articleId));
 });

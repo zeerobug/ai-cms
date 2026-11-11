@@ -52,6 +52,7 @@ function SettingsForm({ s }: { s: SettingsData }) {
         brandVoice: field(fd, "brandVoice"),
       },
       themes: { autoApply: checked(fd, "autoApply"), minRoleToAutoApply: field(fd, "minRoleToAutoApply") as Role },
+      images: { monthlyLimit: Math.max(0, Math.floor(Number(field(fd, "imageMonthlyLimit")) || 0)) },
     };
     const body: SettingsInput = {
       name: field(fd, "name"),
@@ -130,6 +131,13 @@ function SettingsForm({ s }: { s: SettingsData }) {
         <h2>Design</h2>
         <label className="check"><input type="checkbox" name="autoApply" defaultChecked={ai.themes.autoApply} /> Allow AI-designed themes to be applied to the live site immediately</label>
         <div className="row"><div><label>Minimum role to auto-apply</label><RoleSelect name="minRoleToAutoApply" defaultValue={ai.themes.minRoleToAutoApply} /></div></div>
+
+        <h2>Images</h2>
+        <div className="row"><div><label>Monthly AI image limit (0 = unlimited)</label><input type="number" min={0} name="imageMonthlyLimit" defaultValue={ai.images.monthlyLimit} /></div></div>
+        <p className="muted">
+          Claude only writes text, so AI images come from OpenAI: the site's OpenAI provider, or the platform's OpenAI key when the site uses Claude.
+          {tenant.ai.imageProvider ? <> This site generates images with <strong>{tenant.ai.imageProvider}</strong>.</> : " AI images aren't available for this site right now; uploads always work."}
+        </p>
       </div>
       <p><button disabled={busy}>Save settings</button></p>
     </form>

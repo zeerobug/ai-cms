@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { ZodError } from "zod";
 import { PolicyError, type AiService } from "../ai/service.js";
 import { BlocksSchema, markdownToBlocks } from "../content/blocks.js";
+import { isImageUrl } from "../content/media.js";
 import { safeJson, type Repo } from "../repo.js";
 import { can, type Role } from "../tenancy.js";
 
@@ -10,9 +11,9 @@ import { can, type Role } from "../tenancy.js";
  *
  *   GET  /api/v1/articles[?status=published]
  *   GET  /api/v1/articles/:id
- *   POST /api/v1/articles            { title, markdown | blocks, summary?, tags?, status? }
- *   POST /api/v1/ai/articles[?wait=1] { topic, instructions?, tone?, length?, publish?, designLook? }
- *   POST /api/v1/ai/themes[?wait=1]   { prompt, apply?, baseThemeId?, palette? }
+ *   POST /api/v1/articles            { title, markdown | blocks, summary?, tags?, status?, imageUrl?, imageAlt? }
+ *   POST /api/v1/ai/articles[?wait=1] { topic, instructions?, tone?, length?, publish?, designLook?, coverImage? }
+ *   POST /api/v1/ai/themes[?wait=1]   { prompt, apply?, baseThemeId?, palette?, heroImage? }
  *        palette: text in any supported format, ["#hex", …] or { primary: "#hex", … }
  *   GET  /api/v1/jobs/:id
  */
@@ -47,6 +48,8 @@ export function apiRouter(repo: Repo, ai: AiService) {
     const b = req.body ?? {};
     if (typeof b.title !== "string" || !b.title.trim()) return void res.status(400).json({ error: "title is required" });
     const blocks = Array.isArray(b.blocks) ? BlocksSchema.parse(b.blocks) : markdownToBlocks(String(b.markdown ?? ""));
+    if (b.imageUrl !== undefined && b.imageUrl !== "" && !isImageUrl(b.imageUrl))
+      return void res.status(400).json({ error: "imageUrl must be an https URL or a /media/ path" });
     let status = ["draft", "review", "published"].includes(b.status) ? b.status : "draft";
     if (status === "published" && !can(role(res), "article.publish")) status = "review";
     const id = repo.createArticle(res.locals.tenant!.id, {
@@ -57,6 +60,7 @@ export function apiRouter(repo: Repo, ai: AiService) {
       blocks,
       status,
       source: "human",
+      image: b.imageUrl ? { url: b.imageUrl, alt: String(b.imageAlt ?? "") } : null,
     });
     res.status(201).json({ id, slug: repo.article(res.locals.tenant!.id, id)!.slug, status });
   });

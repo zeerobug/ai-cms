@@ -16,6 +16,7 @@ export const PERMISSION_LIST = [
   "article.editAny",
   "article.publish",
   "article.delete",
+  "media.delete",
   "design.manage",
   "settings.manage",
   "members.manage",
@@ -49,6 +50,8 @@ export interface TenantInfo {
     provider: string;
     canAutoPublish: boolean;
     canAutoApply: boolean;
+    /** Provider that generates images for this site, or null if AI images aren't available. */
+    imageProvider: string | null;
     defaultTone: string;
     defaultLength: ArticleLength;
   };
@@ -88,6 +91,9 @@ export interface ArticleDetail {
   source: "human" | "ai";
   aiPrompt: string | null;
   themeId: number | null;
+  /** Cover image URL ('' = none). */
+  imageUrl: string;
+  imageAlt: string;
   markdown: string;
   editable: boolean;
   /** Statuses this user may pick in the editor. */
@@ -104,6 +110,28 @@ export interface ArticleInput {
   tags?: string[] | string;
   status?: ArticleStatus;
   themeId?: number | null;
+  /** https URL or /media/... path; empty = no cover image. */
+  imageUrl?: string;
+  imageAlt?: string;
+}
+
+export type ImageAspect = "landscape" | "square" | "portrait";
+
+/** An image in the site's media library (uploaded or AI-generated). */
+export interface MediaItem {
+  id: number;
+  url: string;
+  alt: string;
+  source: "upload" | "ai";
+  prompt: string | null;
+  size: number;
+  createdAt: string;
+}
+
+export interface ImageGenerateInput {
+  prompt: string;
+  aspect?: ImageAspect;
+  alt?: string;
 }
 
 export interface JobDetail {
@@ -111,7 +139,15 @@ export interface JobDetail {
   kind: "article" | "theme";
   status: JobStatus;
   request: string;
-  result: { message?: string; articleId?: number; slug?: string; status?: string; themeId?: number | null; applied?: boolean } | null;
+  result: {
+    message?: string;
+    articleId?: number;
+    slug?: string;
+    status?: string;
+    themeId?: number | null;
+    applied?: boolean;
+    imageUrl?: string | null;
+  } | null;
   error: string | null;
   usage: { model: string; inputTokens: number; outputTokens: number }[] | null;
 }
@@ -130,6 +166,8 @@ export interface ThemeDetail {
   id: number;
   name: string;
   spec: unknown;
+  /** The hero image ('' = none). */
+  heroImageUrl: string;
 }
 
 export interface AiSettings {
@@ -148,6 +186,7 @@ export interface AiSettings {
     monthlyLimit: number;
   };
   themes: { autoApply: boolean; minRoleToAutoApply: Role };
+  images: { monthlyLimit: number };
 }
 
 export interface SettingsData {

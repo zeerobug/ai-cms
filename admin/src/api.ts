@@ -41,6 +41,19 @@ export async function api<T>(path: string, opts: { method?: Method; body?: unkno
     body = JSON.stringify(opts.body ?? {});
   }
   const res = await fetch(`/admin/api${path}`, { method, headers, body, credentials: "same-origin", signal: opts.signal });
+  return parse<T>(res);
+}
+
+/** POSTs a file as the raw request body (used for image uploads; the server checks the bytes). */
+export async function upload<T>(path: string, file: Blob, query: Record<string, string> = {}): Promise<T> {
+  const headers: Record<string, string> = { accept: "application/json", "content-type": file.type || "application/octet-stream" };
+  if (session.csrf) headers["x-csrf-token"] = session.csrf;
+  const qs = new URLSearchParams(query).toString();
+  const res = await fetch(`/admin/api${path}${qs ? `?${qs}` : ""}`, { method: "POST", headers, body: file, credentials: "same-origin" });
+  return parse<T>(res);
+}
+
+async function parse<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new ApiFailure(res.status, (data as { error?: string } | null)?.error ?? res.statusText);
   return data as T;

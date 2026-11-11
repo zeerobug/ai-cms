@@ -13,6 +13,7 @@ const PERMISSIONS = {
   "article.editAny": "editor",
   "article.publish": "editor",
   "article.delete": "editor",
+  "media.delete": "editor",
   "design.manage": "editor",
   "settings.manage": "owner",
   "members.manage": "owner",
@@ -64,6 +65,12 @@ export const TenantSettingsSchema = z.object({
           /** May AI-designed themes be applied to the live site immediately? */
           autoApply: z.boolean().default(false),
           minRoleToAutoApply: role.default("editor"),
+        })
+        .prefault({}),
+      images: z
+        .object({
+          /** Max AI-generated images per calendar month (0 = unlimited). */
+          monthlyLimit: z.number().int().min(0).default(50),
         })
         .prefault({}),
     })

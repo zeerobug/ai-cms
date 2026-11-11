@@ -7,6 +7,7 @@ import { Repo } from "./repo.js";
 import { adminApiRouter } from "./web/admin-api.js";
 import { adminPreviewRouter } from "./web/admin-previews.js";
 import { apiRouter } from "./web/api.js";
+import { mediaRouter } from "./web/media.js";
 import { hostTenant, pathTenant, siteRouter } from "./web/site.js";
 
 /**
@@ -29,6 +30,9 @@ export function createApp(opts: { db?: DB; provider?: AIProvider; providerFactor
   app.use("/admin/api", adminApiRouter(repo, ai));
   app.use("/admin", adminPreviewRouter(repo));
   if (opts.adminUi) app.use(opts.adminUi);
+
+  // Uploaded / AI-generated images, on every host (before the public sites claim the path).
+  app.use("/media", mediaRouter(repo));
 
   // Public sites: custom domain / subdomain first, then /s/:tenant path prefix.
   const site = siteRouter(repo);

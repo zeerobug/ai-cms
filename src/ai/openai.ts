@@ -11,8 +11,12 @@ import {
   type AiResult,
   type ArticleRequest,
   type Effort,
+  type GeneratedImage,
+  type ImageRequest,
   type ThemeRequest,
 } from "./provider.js";
+
+const IMAGE_SIZES = { landscape: "1536x1024", square: "1024x1024", portrait: "1024x1536" } as const;
 
 /**
  * Sites default to a Claude model; when such a site switches to OpenAI without changing the
@@ -37,6 +41,31 @@ export class OpenAIProvider implements AIProvider {
 
   async designTheme(req: ThemeRequest) {
     return this.structured(THEME_SYSTEM, themeUserPrompt(req), AiThemeSchema, "theme", req.model, req.effort);
+  }
+
+  async generateImage(req: ImageRequest): Promise<AiResult<GeneratedImage>> {
+    const model = config.openaiImageModel;
+    let response;
+    try {
+      response = await this.client.images.generate({
+        model,
+        prompt: req.prompt,
+        size: IMAGE_SIZES[req.aspect],
+        quality: "medium",
+        output_format: "webp",
+        output_compression: 85,
+        n: 1,
+      });
+    } catch (err) {
+      if (err instanceof OpenAI.BadRequestError && err.code === "moderation_blocked") throw new AiRefusalError("image moderation");
+      throw err;
+    }
+    const b64 = response.data?.[0]?.b64_json;
+    if (!b64) throw new Error("The AI returned no image.");
+    return {
+      value: { data: Buffer.from(b64, "base64") },
+      usage: { model, inputTokens: response.usage?.input_tokens ?? 0, outputTokens: response.usage?.output_tokens ?? 0 },
+    };
   }
 
   private async structured<S extends z.ZodType>(

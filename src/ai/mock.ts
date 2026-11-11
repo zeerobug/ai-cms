@@ -1,7 +1,8 @@
+import zlib from "node:zlib";
 import type { Block } from "../content/blocks.js";
 import { paletteToColors } from "../themes/palette.js";
 import type { AiTheme } from "../themes/spec.js";
-import type { AIProvider, ArticleDraft, ArticleRequest, ThemeRequest } from "./provider.js";
+import type { AIProvider, ArticleDraft, ArticleRequest, ImageRequest, ThemeRequest } from "./provider.js";
 
 /**
  * Deterministic, offline stand-in for the real model. Used for demos without an API key
@@ -95,6 +96,57 @@ export class MockProvider implements AIProvider {
 
     return { value: theme, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
   }
+
+  /** A gradient PNG whose colors are derived from the prompt (same prompt → same image). */
+  async generateImage(req: ImageRequest) {
+    await sleep(this.delayMs);
+    const [w, h] = { landscape: [480, 320], square: [400, 400], portrait: [320, 480] }[req.aspect];
+    let hash = 2166136261;
+    for (const ch of req.prompt) hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619);
+    const hue = (hash >>> 0) % 360;
+    const data = gradientPng(w, h, hsl(hue, 0.65, 0.55), hsl((hue + 70) % 360, 0.7, 0.35));
+    return { value: { data }, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
+  }
+}
+
+type Rgb = [number, number, number];
+
+function hsl(h: number, s: number, l: number): Rgb {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [f(0), f(8), f(4)].map((v) => Math.round(v * 255)) as Rgb;
+}
+
+/** Minimal PNG encoder (8-bit RGB, diagonal gradient from `a` to `b`). */
+function gradientPng(w: number, h: number, a: Rgb, b: Rgb): Buffer {
+  const stride = w * 3 + 1;
+  const pixels = Buffer.alloc(stride * h);
+  for (let y = 0; y < h; y++) {
+    pixels[y * stride] = 0; // filter: none
+    for (let x = 0; x < w; x++) {
+      const t = (x / w + y / h) / 2;
+      for (let c = 0; c < 3; c++) pixels[y * stride + 1 + x * 3 + c] = Math.round(a[c] + (b[c] - a[c]) * t);
+    }
+  }
+  const chunk = (type: string, body: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), body]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(typed));
+    return Buffer.concat([len, typed, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8); // bit depth 8, color type RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(pixels)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 const sleep = (ms: number) => (ms ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());

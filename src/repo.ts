@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { BlocksSchema, slugify, type Block } from "./content/blocks.js";
+import type { ImageType } from "./content/media.js";
 import { all, one, run, type DB } from "./db.js";
 import { parseSettings, type Role, type TenantSettings } from "./tenancy.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, type ThemeSpec } from "./themes/spec.js";
@@ -49,6 +50,9 @@ export interface ArticleRow {
   published_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Cover image URL ('' = none) and alt text. */
+  image_url: string;
+  image_alt: string;
 }
 export interface ThemeRow {
   id: number;
@@ -71,6 +75,26 @@ export interface JobRow {
   usage: string | null;
   created_at: string;
   finished_at: string | null;
+}
+
+/** A media row without its bytes. */
+export interface MediaRow {
+  id: number;
+  tenant_id: number;
+  file: string;
+  mime: string;
+  size: number;
+  alt: string;
+  source: "upload" | "ai";
+  prompt: string | null;
+  created_at: string;
+}
+const MEDIA_COLS = "id, tenant_id, file, mime, size, alt, source, prompt, created_at";
+
+/** Cover image of an article. */
+export interface ArticleImage {
+  url: string;
+  alt: string;
 }
 
 export class Repo {
@@ -291,13 +315,14 @@ export class Repo {
       aiPrompt?: string;
       themeId?: number | null;
       authorId?: number | null;
+      image?: ArticleImage | null;
     },
   ) {
     const slug = this.uniqueSlug(tenantId, a.slug || a.title);
     const r = run(
       this.db,
-      `INSERT INTO articles (tenant_id, slug, title, summary, seo_description, blocks, tags, status, source, ai_prompt, theme_id, author_id, published_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${a.status === "published" ? "datetime('now')" : "NULL"})`,
+      `INSERT INTO articles (tenant_id, slug, title, summary, seo_description, blocks, tags, status, source, ai_prompt, theme_id, author_id, image_url, image_alt, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${a.status === "published" ? "datetime('now')" : "NULL"})`,
       tenantId,
       slug,
       a.title,
@@ -310,6 +335,8 @@ export class Repo {
       a.aiPrompt ?? null,
       a.themeId ?? null,
       a.authorId ?? null,
+      a.image?.url ?? "",
+      a.image?.alt ?? "",
     );
     return Number(r.lastInsertRowid);
   }
@@ -317,12 +344,22 @@ export class Repo {
   updateArticle(
     tenantId: number,
     id: number,
-    a: { title: string; slug: string; summary: string; seoDescription: string; blocks: Block[]; tags: string[]; status: ArticleRow["status"]; themeId: number | null },
+    a: {
+      title: string;
+      slug: string;
+      summary: string;
+      seoDescription: string;
+      blocks: Block[];
+      tags: string[];
+      status: ArticleRow["status"];
+      themeId: number | null;
+      image: ArticleImage | null;
+    },
   ) {
     const slug = this.uniqueSlug(tenantId, a.slug || a.title, id);
     run(
       this.db,
-      `UPDATE articles SET title = ?, slug = ?, summary = ?, seo_description = ?, blocks = ?, tags = ?, status = ?, theme_id = ?,
+      `UPDATE articles SET title = ?, slug = ?, summary = ?, seo_description = ?, blocks = ?, tags = ?, status = ?, theme_id = ?, image_url = ?, image_alt = ?,
          published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE NULL END,
          updated_at = datetime('now')
        WHERE tenant_id = ? AND id = ?`,
@@ -334,6 +371,8 @@ export class Repo {
       JSON.stringify(normalizeTags(a.tags)),
       a.status,
       a.themeId,
+      a.image?.url ?? "",
+      a.image?.alt ?? "",
       a.status,
       tenantId,
       id,
@@ -405,7 +444,58 @@ export class Repo {
       tags: safeJson<string[]>(row.tags, []),
       publishedAt: row.published_at,
       source: row.source,
+      image: row.image_url ? { url: row.image_url, alt: row.image_alt } : null,
     };
+  }
+
+  // ---- media ---------------------------------------------------------------
+
+  createMedia(
+    tenantId: number,
+    m: { data: Uint8Array; type: ImageType; alt: string; source: MediaRow["source"]; prompt?: string | null; userId?: number | null },
+  ): MediaRow {
+    const file = `${crypto.randomBytes(12).toString("base64url")}.${m.type.ext}`;
+    const r = run(
+      this.db,
+      "INSERT INTO media (tenant_id, file, mime, size, data, alt, source, prompt, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      tenantId,
+      file,
+      m.type.mime,
+      m.data.byteLength,
+      m.data,
+      m.alt.slice(0, 300),
+      m.source,
+      m.prompt ?? null,
+      m.userId ?? null,
+    );
+    return this.media(tenantId, Number(r.lastInsertRowid))!;
+  }
+  media(tenantId: number, id: number) {
+    return one<MediaRow>(this.db, `SELECT ${MEDIA_COLS} FROM media WHERE tenant_id = ? AND id = ?`, tenantId, id);
+  }
+  mediaList(tenantId: number, limit = 60) {
+    return all<MediaRow>(this.db, `SELECT ${MEDIA_COLS} FROM media WHERE tenant_id = ? ORDER BY id DESC LIMIT ?`, tenantId, limit);
+  }
+  /** Bytes of a media file, looked up by its public URL parts (tenant slug + file). */
+  mediaFile(tenantSlug: string, file: string) {
+    return one<{ mime: string; data: Uint8Array }>(
+      this.db,
+      "SELECT m.mime, m.data FROM media m JOIN tenants t ON t.id = m.tenant_id WHERE t.slug = ? AND m.file = ?",
+      tenantSlug,
+      file,
+    );
+  }
+  deleteMedia(tenantId: number, id: number) {
+    run(this.db, "DELETE FROM media WHERE tenant_id = ? AND id = ?", tenantId, id);
+  }
+  aiImagesThisMonth(tenantId: number) {
+    return (
+      one<{ n: number }>(
+        this.db,
+        "SELECT COUNT(*) AS n FROM media WHERE tenant_id = ? AND source = 'ai' AND created_at >= datetime('now', 'start of month')",
+        tenantId,
+      )?.n ?? 0
+    );
   }
 
   // ---- AI jobs -------------------------------------------------------------

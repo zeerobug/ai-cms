@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BlocksSchema } from "../content/blocks.js";
+import type { ImageAspect } from "../content/media.js";
 import type { Palette } from "../themes/palette.js";
 import type { AiTheme, ThemeSpec } from "../themes/spec.js";
 
@@ -38,6 +39,16 @@ export interface ThemeRequest {
   effort: Effort;
 }
 
+export interface ImageRequest {
+  prompt: string;
+  aspect: ImageAspect;
+}
+
+export interface GeneratedImage {
+  /** Encoded image bytes (PNG/JPEG/WebP); the format is detected from the bytes. */
+  data: Uint8Array;
+}
+
 export interface Usage {
   model: string;
   inputTokens: number;
@@ -53,6 +64,8 @@ export interface AIProvider {
   readonly name: string;
   writeArticle(req: ArticleRequest): Promise<AiResult<ArticleDraft>>;
   designTheme(req: ThemeRequest): Promise<AiResult<AiTheme>>;
+  /** Only image-capable providers implement this (OpenAI, mock); Claude outputs text only. */
+  generateImage?(req: ImageRequest): Promise<AiResult<GeneratedImage>>;
 }
 
 export class AiRefusalError extends Error {

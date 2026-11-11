@@ -41,3 +41,18 @@ fieldset{border:0;padding:0;margin:0}
 .toast{background:#1f2d3a;color:#fff;padding:.7rem 1rem;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:pointer;border-left:4px solid #40c057;animation:toast-in .18s ease-out}
 .toast.err{border-left-color:#fa5252}
 @keyframes toast-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+
+/* Image picker */
+.picker{margin:.5rem 0 .2rem}
+.picker .gen{display:flex;gap:.4rem;margin-top:.5rem}.picker .gen input{flex:1}
+label.btn.file{margin:0;font-weight:600}label.btn.file.disabled{opacity:.6;pointer-events:none}
+.media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:.5rem;margin-top:.6rem}
+.media-item{position:relative}
+.media-item>button:first-child{display:block;width:100%;padding:0;background:#eef0f4;border:2px solid transparent;border-radius:7px;overflow:hidden}
+.media-item>button:first-child:hover{border-color:#3b5bdb}
+.media-item img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover}
+.media-item .badge{position:absolute;left:4px;bottom:4px}
+.media-item .del{position:absolute;top:4px;right:4px;padding:0 .4rem;line-height:1.4;background:rgba(0,0,0,.6);font-size:.9rem}
+.cover-preview{display:grid;grid-template-columns:minmax(0,240px) 1fr;gap:1rem;align-items:start;margin:.3rem 0}
+.cover-preview img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid #e3e5ea}
+.cover-preview label{margin-top:0}
