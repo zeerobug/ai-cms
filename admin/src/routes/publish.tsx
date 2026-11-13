@@ -39,7 +39,7 @@ export function Component() {
           <p>Live static site: <a href={p.siteUrl} target="_blank" rel="noreferrer">{p.siteUrl}</a></p>
         )}
         {p.ready ? (
-          <p>
+          <p className="mt-4">
             <button onClick={deployNow} disabled={busy}>🚀 Deploy now</button>{" "}
             {p.busy && <span className="muted"><span className="spinner" /> deploying…</span>}
             {!p.busy && <span className="muted">{p.auto ? "Changes are deployed automatically a few seconds after they're saved." : "Automatic deploys are off."}</span>}
@@ -127,7 +127,7 @@ function PublishForm({ p }: { p: PublishData }) {
         Create an empty site in Netlify first (Add new site → Deploy manually), then paste its ID here. The token is stored encrypted and never shown again.
         Deploys only upload files that changed, and are skipped when nothing visible changed (e.g. editing a draft).
       </p>
-      <p><button disabled={busy}>Save publishing settings</button></p>
+      <p className="mt-4"><button disabled={busy}>Save publishing settings</button></p>
     </form>
   );
 }

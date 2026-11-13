@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { safeUrl } from "../util/html.js";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { ZodError } from "zod";
 import { PolicyError, type AiService } from "../ai/service.js";
@@ -7,8 +8,10 @@ import { blocksToMarkdown, markdownToBlocks, slugify } from "../content/blocks.j
 import { isImageUrl, MAX_IMAGE_BYTES, mediaUrl, sniffImage } from "../content/media.js";
 import { seoGaps } from "../content/seo.js";
 import { PublishError, type PublishService } from "../publish/service.js";
+import { CRED_FIELDS, NETWORK_LABELS } from "../social/networks.js";
+import { SocialError, SocialService } from "../social/service.js";
 import { safeJson, type ArticleImage, type ArticleRow, type DeployRow, type JobRow, type MediaRow, type Repo, type Tenant } from "../repo.js";
-import { AI_PROVIDERS, atLeast, can, ROLES, TenantSettingsSchema, type Role } from "../tenancy.js";
+import { AI_PROVIDERS, atLeast, can, ROLES, SOCIAL_NETWORKS, TenantSettingsSchema, type Role, type SocialNetwork } from "../tenancy.js";
 import { MAX_PALETTE_INPUT, paletteToColors, parsePalette } from "../themes/palette.js";
 import { normalizeTheme } from "../themes/spec.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../util/secrets.js";
@@ -28,6 +31,9 @@ import {
   type PublishInput,
   type SessionInfo,
   type SettingsData,
+  type SocialData,
+  type SocialInput,
+  type SocialShareInput,
   type SettingsInput,
   type SeoRequestInput,
   type SiteSummary,
@@ -67,7 +73,7 @@ export const PROVIDER_LABELS: Record<(typeof AI_PROVIDERS)[number], string> = {
  * Mutations must be `application/json` (blocks cross-site form posts) and carry `X-CSRF-Token`
  * once logged in (enforced by sessionMiddleware).
  */
-export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishService) {
+export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishService, social: SocialService) {
   const r = express.Router();
   const articleSummary = makeArticleSummary(repo);
 
@@ -344,7 +350,7 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
   t.get("/themes/:id", need("design.manage"), (req, res) => {
     const row = findTheme(res, req.params.id);
     const spec = repo.themeSpec(row);
-    const body: ThemeDetail = { id: row.id, name: row.name, spec, heroImageUrl: spec.hero.imageUrl };
+    const body: ThemeDetail = { id: row.id, name: row.name, spec, heroImageUrl: spec.hero.imageUrl, logoUrl: spec.logo.imageUrl, hero: { enabled: spec.hero.enabled, title: spec.hero.title, subtitle: spec.hero.subtitle, ctaLabel: spec.hero.ctaLabel, ctaHref: spec.hero.ctaHref } };
     res.json(body);
   });
 
@@ -392,6 +398,34 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
       : { ...spec.hero, imageUrl: "", style: spec.hero.style === "image" ? "gradient" : spec.hero.style };
     repo.updateTheme(tn.id, row.id, normalizeTheme(spec, spec));
     res.json({ message: url ? "Hero image set." : "Hero image removed." });
+  });
+
+  /** Body: { title, subtitle, ctaLabel, ctaHref } (all strings). Empty title/subtitle fall back to the site name/tagline; the button needs both label and link. */
+  t.put("/themes/:id/hero-text", need("design.manage"), (req, res) => {
+    const tn = tenantOf(res);
+    const row = findTheme(res, req.params.id);
+    const b = req.body ?? {};
+    for (const k of ["title", "subtitle", "ctaLabel", "ctaHref"]) if (typeof b[k] !== "string") throw new HttpError(400, `${k} must be text.`);
+    const ctaLabel = b.ctaLabel.trim();
+    const ctaHref = b.ctaHref.trim();
+    if ((ctaLabel || ctaHref) && !(ctaLabel && safeUrl(ctaHref))) throw new HttpError(400, "The button needs a label and a link (a path like /tag/news, or an https URL).");
+    const spec = repo.themeSpec(row);
+    spec.hero = { ...spec.hero, title: b.title.trim(), subtitle: b.subtitle.trim(), ctaLabel, ctaHref };
+    if (b.enabled === true) spec.hero.enabled = true;
+    repo.updateTheme(tn.id, row.id, normalizeTheme(spec, spec));
+    res.json({ message: "Hero text saved." });
+  });
+
+  /** Body: { url } sets the site logo shown in the header; { url: null } removes it. */
+  t.put("/themes/:id/logo", need("design.manage"), (req, res) => {
+    const tn = tenantOf(res);
+    const row = findTheme(res, req.params.id);
+    const url = req.body?.url;
+    if (url !== null && !isImageUrl(url)) throw new HttpError(400, "The logo must be an https URL or an uploaded image.");
+    const spec = repo.themeSpec(row);
+    spec.logo = { imageUrl: url ?? "" };
+    repo.updateTheme(tn.id, row.id, normalizeTheme(spec, spec));
+    res.json({ message: url ? "Logo set." : "Logo removed." });
   });
 
   // ---- media library (images for heroes and articles) ----------------------
@@ -459,6 +493,7 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
       domain: tn.domain,
       ai: tn.settings.ai,
       seo: tn.settings.seo,
+      analytics: tn.settings.analytics,
       sitemapUrl: `${siteUrl}/sitemap.xml`,
       robotsUrl: `${siteUrl}/robots.txt`,
       seoMissing: ai.articlesNeedingSeo(tn, 1000).length,
@@ -479,7 +514,7 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
     const tn = tenantOf(res);
     const b = (req.body ?? {}) as Partial<SettingsInput>;
     // Static publishing has its own endpoint (PUT /publish); keep its settings as they are.
-    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai, seo: b.seo ?? tn.settings.seo, publish: tn.settings.publish });
+    const parsed = TenantSettingsSchema.safeParse({ ai: b.ai, seo: b.seo ?? tn.settings.seo, analytics: b.analytics ?? tn.settings.analytics, publish: tn.settings.publish, social: tn.settings.social });
     if (!parsed.success) throw new HttpError(400, "Invalid settings: " + parsed.error.issues.map((i) => i.path.join(".")).join(", "));
     const domain = str(b.domain).trim().toLowerCase() || null;
     if (domain) {
@@ -543,6 +578,105 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
     res.status(202).json({ deployId: id, message: "Deploy started." });
   });
 
+  // ---- social sharing (LinkedIn, X, Facebook) ----------------------------------
+
+  const socialData = (res: Response): SocialData => {
+    const tn = tenantOf(res);
+    const { creds, unreadable } = social.credentials(tn.id);
+    const s = tn.settings.social;
+    return {
+      networks: social.networkStates(tn).map((n) => ({
+        network: n.network,
+        label: NETWORK_LABELS[n.network],
+        enabled: n.enabled,
+        gap: n.gap,
+        fields: CRED_FIELDS[n.network].map((f) => ({ ...f, stored: !!(creds[n.network] as Record<string, string> | undefined)?.[f.key] })),
+      })),
+      auto: s.auto,
+      siteUrl: s.siteUrl,
+      linkedinAuthor: s.linkedinAuthor,
+      facebookPageId: s.facebookPageId,
+      effectiveSiteUrl: social.siteRoot(tn),
+      unreadable,
+      busy: social.isBusy(tn.id) || repo.socialPosts(tn.id, 30).some((p) => p.status === "posting"),
+      canConfigure: can(roleOf(res), "settings.manage"),
+      articles: repo.articles(tn.id, { status: "published", limit: 30 }).map((a) => ({ id: a.id, title: a.title })),
+      posts: repo.socialPosts(tn.id, 30).map((p) => ({
+        id: p.id,
+        articleId: p.article_id,
+        articleTitle: p.article_title,
+        network: p.network,
+        trigger: p.trigger,
+        status: p.status,
+        text: p.text,
+        url: p.url,
+        error: p.error,
+        createdAt: p.created_at,
+      })),
+    };
+  };
+  const networkList = (v: unknown): SocialNetwork[] =>
+    SOCIAL_NETWORKS.filter((n) => Array.isArray(v) && v.includes(n));
+
+  t.get("/social", need("article.publish"), (_req, res) => void res.json(socialData(res)));
+
+  t.put("/social", need("settings.manage"), (req, res) => {
+    const tn = tenantOf(res);
+    const b = (req.body ?? {}) as Partial<SocialInput>;
+    const auto = b.auto === true;
+    const prev = tn.settings.social;
+    const parsed = TenantSettingsSchema.shape.social.safeParse({
+      networks: networkList(b.networks),
+      auto,
+      // Auto-posting only covers articles published after it was switched on.
+      autoSince: auto ? (prev.auto && prev.autoSince ? prev.autoSince : new Date().toISOString().slice(0, 19).replace("T", " ")) : prev.autoSince,
+      siteUrl: str(b.siteUrl).trim(),
+      linkedinAuthor: str(b.linkedinAuthor).trim(),
+      facebookPageId: str(b.facebookPageId).trim(),
+    });
+    if (!parsed.success) {
+      const bad = parsed.error.issues[0]?.path[0];
+      throw new HttpError(
+        400,
+        bad === "siteUrl"
+          ? "The site URL must be an https:// address."
+          : bad === "linkedinAuthor"
+            ? "The LinkedIn author must look like urn:li:person:… or urn:li:organization:…"
+            : bad === "facebookPageId"
+              ? "The Facebook Page ID must be a number."
+              : "Invalid social settings.",
+      );
+    }
+    const patch: Partial<Record<SocialNetwork, Record<string, string>>> = {};
+    for (const n of SOCIAL_NETWORKS) {
+      const given = (b.creds ?? {})[n] as Record<string, unknown> | undefined;
+      if (!given) continue;
+      patch[n] = {};
+      for (const f of CRED_FIELDS[n]) {
+        const v = str(given[f.key]).trim();
+        if (v && (v.length > 1000 || /\s/.test(v))) throw new HttpError(400, `${NETWORK_LABELS[n]}: “${f.label}” doesn't look valid.`);
+        patch[n]![f.key] = v;
+      }
+    }
+    // Store the credentials first: saving settings notifies listeners, which may start posting.
+    social.saveCredentials(tn.id, patch, networkList(b.clear));
+    repo.updateTenantSettings(tn.id, { ...tn.settings, social: parsed.data });
+    res.json({
+      message: auto
+        ? "Social settings saved. Articles published from now on are posted automatically."
+        : "Social settings saved.",
+    });
+  });
+
+  t.post("/social/post", need("article.publish"), (req, res) => {
+    const b = (req.body ?? {}) as Partial<SocialShareInput>;
+    const a = findArticle(res, b.articleId);
+    const networks = networkList(b.networks);
+    if (!networks.length) throw new HttpError(400, "Choose at least one network.");
+    const ids = social.requestPost(tenantOf(res), res.locals.user!.id, a, networks, str(b.text).slice(0, 3000));
+    res.status(202).json({ postIds: ids, message: `Posting to ${networks.map((n) => NETWORK_LABELS[n]).join(", ")}…` });
+  });
+
   const roleParam = (v: unknown): Role => ROLES.find((r) => r === v) ?? "author";
 
   t.post("/members", need("members.manage"), (req, res) => {
@@ -582,7 +716,7 @@ export function adminApiRouter(repo: Repo, ai: AiService, publish: PublishServic
 
   r.use((_req, _res, next) => next(new HttpError(404, "Not found.")));
   r.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError || err instanceof PolicyError || err instanceof PublishError) return void res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError || err instanceof PolicyError || err instanceof PublishError || err instanceof SocialError) return void res.status(err.status).json({ error: err.message });
     if (err instanceof ZodError) return void res.status(400).json({ error: "Please check the form: " + err.issues.map((i) => i.message).join("; ") });
     if ((err as { type?: string })?.type === "entity.too.large")
       return void res.status(413).json({ error: `That file is too large (${MAX_IMAGE_BYTES / 1024 / 1024} MB max).` });

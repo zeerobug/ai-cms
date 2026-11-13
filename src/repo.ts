@@ -3,7 +3,7 @@ import { BlocksSchema, slugify, type Block } from "./content/blocks.js";
 import type { ImageType } from "./content/media.js";
 import type { SeoFields } from "./content/seo.js";
 import { all, one, run, type DB } from "./db.js";
-import { parseSettings, type Role, type TenantSettings } from "./tenancy.js";
+import { parseSettings, type Role, type SocialNetwork, type TenantSettings } from "./tenancy.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, type ThemeSpec } from "./themes/spec.js";
 import type { ArticleView } from "./themes/render.js";
 
@@ -23,8 +23,10 @@ export interface TenantRow {
   ai_api_key: string | null;
   /** Encrypted hosting-provider token for static publishing. Never leaves the repo/publish service. */
   publish_token: string | null;
+  /** Encrypted JSON of social network credentials. Never leaves the repo/social service. */
+  social_creds: string | null;
 }
-export interface Tenant extends Omit<TenantRow, "settings" | "ai_api_key" | "publish_token"> {
+export interface Tenant extends Omit<TenantRow, "settings" | "ai_api_key" | "publish_token" | "social_creds"> {
   settings: TenantSettings;
   /** Whether the tenant has its own LLM API key stored. */
   hasAiKey: boolean;
@@ -118,6 +120,23 @@ export interface DeployRow {
   finished_at: string | null;
 }
 
+/** One attempt to share an article on a social network. */
+export interface SocialPostRow {
+  id: number;
+  tenant_id: number;
+  article_id: number;
+  network: SocialNetwork;
+  trigger: "auto" | "manual";
+  user_id: number | null;
+  status: "posting" | "posted" | "failed";
+  text: string;
+  post_id: string | null;
+  url: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
 /** Cover image of an article. */
 export interface ArticleImage {
   url: string;
@@ -152,7 +171,7 @@ export class Repo {
 
   private hydrate(row: TenantRow | undefined): Tenant | undefined {
     if (!row) return undefined;
-    const { ai_api_key, publish_token, settings, ...rest } = row;
+    const { ai_api_key, publish_token, social_creds, settings, ...rest } = row;
     return { ...rest, settings: parseSettings(settings), hasAiKey: !!ai_api_key, hasPublishToken: !!publish_token };
   }
   tenantBySlug(slug: string) {
@@ -214,8 +233,16 @@ export class Repo {
     run(this.db, "UPDATE tenants SET publish_token = ? WHERE id = ?", encrypted, tenantId);
   }
 
+  /** Encrypted JSON of the tenant's social network credentials, or null. */
+  tenantSocialCreds(tenantId: number): string | null {
+    return one<{ social_creds: string | null }>(this.db, "SELECT social_creds FROM tenants WHERE id = ?", tenantId)?.social_creds ?? null;
+  }
+  setTenantSocialCreds(tenantId: number, encrypted: string | null) {
+    run(this.db, "UPDATE tenants SET social_creds = ? WHERE id = ?", encrypted, tenantId);
+  }
+
   tenantsForUser(userId: number) {
-    return all<Omit<TenantRow, "ai_api_key" | "publish_token"> & { role: Role }>(
+    return all<Omit<TenantRow, "ai_api_key" | "publish_token" | "social_creds"> & { role: Role }>(
       this.db,
       "SELECT t.id, t.slug, t.name, t.tagline, t.domain, t.settings, t.active_theme_id, m.role FROM tenants t JOIN memberships m ON m.tenant_id = t.id WHERE m.user_id = ? ORDER BY t.name",
       userId,
@@ -722,6 +749,57 @@ export class Repo {
       "SELECT * FROM site_deploys WHERE tenant_id = ? AND site_id = ? AND status = 'succeeded' ORDER BY id DESC LIMIT 1",
       tenantId,
       siteId,
+    );
+  }
+
+  // ---- social posts ----------------------------------------------------------
+
+  createSocialPost(tenantId: number, p: { articleId: number; network: SocialNetwork; trigger: SocialPostRow["trigger"]; userId: number | null; text: string }) {
+    const r = run(
+      this.db,
+      "INSERT INTO social_posts (tenant_id, article_id, network, trigger, user_id, text) VALUES (?, ?, ?, ?, ?, ?)",
+      tenantId,
+      p.articleId,
+      p.network,
+      p.trigger,
+      p.userId,
+      p.text,
+    );
+    return Number(r.lastInsertRowid);
+  }
+  finishSocialPost(tenantId: number, id: number, p: { status: "posted" | "failed"; text?: string; postId?: string | null; url?: string | null; error?: string | null }) {
+    run(
+      this.db,
+      "UPDATE social_posts SET status = ?, text = COALESCE(?, text), post_id = ?, url = ?, error = ?, finished_at = datetime('now') WHERE tenant_id = ? AND id = ?",
+      p.status,
+      p.text ?? null,
+      p.postId ?? null,
+      p.url ?? null,
+      p.error ?? null,
+      tenantId,
+      id,
+    );
+  }
+  socialPosts(tenantId: number, limit = 20) {
+    return all<SocialPostRow & { article_title: string }>(
+      this.db,
+      `SELECT p.*, a.title AS article_title FROM social_posts p JOIN articles a ON a.id = p.article_id AND a.tenant_id = p.tenant_id
+       WHERE p.tenant_id = ? ORDER BY p.id DESC LIMIT ?`,
+      tenantId,
+      limit,
+    );
+  }
+  /** Published articles (since `since`) that have no post attempt yet on `network`, oldest first. */
+  articlesToShare(tenantId: number, network: SocialNetwork, since: string, limit = 10) {
+    return all<ArticleRow>(
+      this.db,
+      `SELECT * FROM articles a WHERE a.tenant_id = ? AND a.status = 'published' AND a.published_at >= ?
+         AND NOT EXISTS (SELECT 1 FROM social_posts p WHERE p.tenant_id = a.tenant_id AND p.article_id = a.id AND p.network = ?)
+       ORDER BY a.published_at, a.id LIMIT ?`,
+      tenantId,
+      since,
+      network,
+      limit,
     );
   }
 }

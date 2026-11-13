@@ -37,6 +37,7 @@ const router = createBrowserRouter(
             { path: "design", lazy: () => import("./routes/design") },
             { path: "design/:id", lazy: () => import("./routes/theme-edit") },
             { path: "publish", lazy: () => import("./routes/publish") },
+            { path: "social", lazy: () => import("./routes/social") },
             { path: "settings", lazy: () => import("./routes/settings") },
           ],
         },
@@ -95,7 +96,7 @@ function Header() {
       <span className="sp" />
       {user && (
         <>
-          <span className="muted" style={{ color: "#9aa" }}>{user.email}</span>
+          <span className="muted">{user.email}</span>
           <button className="sm sec" onClick={logout}>Log out</button>
         </>
       )}
@@ -115,9 +116,10 @@ function TenantNav({ slug }: { slug: string }) {
       <NavLink to={`/${slug}/articles`} className={cls}>Articles</NavLink>
       <NavLink to={`/${slug}/design`} className={cls}>Design</NavLink>
       {tenant.can["article.publish"] && <NavLink to={`/${slug}/publish`} className={cls}>Publish</NavLink>}
+      {tenant.can["article.publish"] && <NavLink to={`/${slug}/social`} className={cls}>Social</NavLink>}
       {tenant.can["settings.manage"] && <NavLink to={`/${slug}/settings`} className={cls}>Settings</NavLink>}
       <a href={`/s/${slug}`} target="_blank" rel="noreferrer">View site ↗</a>
-      <span className="muted" style={{ color: "#9aa" }}>{tenant.role}</span>
+      <span className="muted ml-1 rounded-full bg-white/10 px-2 py-0.5 text-xs capitalize">{tenant.role}</span>
     </>
   );
 }

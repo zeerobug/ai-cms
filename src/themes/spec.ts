@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isImageUrl } from "../content/media.js";
+import { safeUrl } from "../util/html.js";
 
 /**
  * THE TEMPLATE SYSTEM
@@ -86,7 +87,14 @@ export const ThemeSpecSchema = z.object({
     subtitle: z.string().max(300),
     style: z.enum(HERO_STYLES),
     align: z.enum(["left", "center"]),
+    /** Call-to-action button under the hero text; shown only when both are set. */
+    ctaLabel: z.string().max(40),
+    ctaHref: z.string().max(300),
     /** https URL or an uploaded/AI image (/media/...); see isImageUrl. */
+    imageUrl: z.string().max(500).refine((u) => u === "" || isImageUrl(u), "must be an https or /media/ image URL"),
+  }),
+  /** Site logo shown in the header instead of the site name. Set by people only, never by the AI. */
+  logo: z.object({
     imageUrl: z.string().max(500).refine((u) => u === "" || isImageUrl(u), "must be an https or /media/ image URL"),
   }),
   decoration: z.object({
@@ -145,6 +153,8 @@ export const AiThemeSchema = z.object({
     subtitle: z.string(),
     style: z.enum(HERO_STYLES),
     align: z.enum(["left", "center"]),
+    ctaLabel: z.string().describe("Label of the hero call-to-action button, max 40 chars; empty for no button"),
+    ctaHref: z.string().describe("Button link: a path like /tag/news, or an https URL; empty for no button"),
     imageUrl: z.string().describe("Image URL for the 'image' hero style (keep the current one unless asked to change it), otherwise empty"),
   }),
   decoration: z.object({ background: z.enum(BACKGROUNDS), linkStyle: z.enum(LINK_STYLES) }),
@@ -220,8 +230,11 @@ export function normalizeTheme(input: unknown, base: ThemeSpec): ThemeSpec {
       subtitle: str(h.subtitle, 300, base.hero.subtitle),
       style: pick(h.style, HERO_STYLES, base.hero.style),
       align: pick(h.align, ["left", "center"] as const, base.hero.align),
+      ctaLabel: str(h.ctaLabel, 40, base.hero.ctaLabel),
+      ctaHref: str(h.ctaHref, 300, base.hero.ctaHref),
       imageUrl: isImageUrl(h.imageUrl) ? h.imageUrl : "",
     },
+    logo: { imageUrl: isImageUrl(i.logo?.imageUrl) ? i.logo.imageUrl : base.logo.imageUrl },
     decoration: {
       background: pick(d.background, BACKGROUNDS, base.decoration.background),
       linkStyle: pick(d.linkStyle, LINK_STYLES, base.decoration.linkStyle),
@@ -237,6 +250,7 @@ export function normalizeTheme(input: unknown, base: ThemeSpec): ThemeSpec {
       showPoweredBy: typeof f.showPoweredBy === "boolean" ? f.showPoweredBy : base.footer.showPoweredBy,
     },
   };
+  if (!spec.hero.ctaLabel || !safeUrl(spec.hero.ctaHref)) spec.hero.ctaLabel = spec.hero.ctaHref = "";
   if (spec.hero.style === "image" && !spec.hero.imageUrl) spec.hero.style = "gradient";
   return ThemeSpecSchema.parse(spec);
 }
@@ -278,7 +292,8 @@ export const DEFAULT_THEME: ThemeSpec = {
     showDates: true,
     showReadingTime: true,
   },
-  hero: { enabled: true, title: "", subtitle: "", style: "plain", align: "left", imageUrl: "" },
+  hero: { enabled: true, title: "", subtitle: "", style: "plain", align: "left", ctaLabel: "", ctaHref: "", imageUrl: "" },
+  logo: { imageUrl: "" },
   decoration: { background: "none", linkStyle: "color" },
   nav: [],
   footer: { text: "", showPoweredBy: true },

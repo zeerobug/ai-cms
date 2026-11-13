@@ -39,6 +39,7 @@ export function siteInfo(t: Tenant, base: string, origin: string): SiteInfo & { 
     lang: t.settings.seo.lang,
     description: t.settings.seo.description,
     indexable: t.settings.seo.indexing,
+    gtagId: t.settings.analytics.gtagId,
   };
 }
 

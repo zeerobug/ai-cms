@@ -76,6 +76,16 @@ Each site can also be published as a static site on Netlify (**Publish** tab). C
 - With **Deploy automatically** on, every change to the public site triggers a deploy about 10 seconds later. That covers changes from the admin, the REST API and AI jobs: publishing, unpublishing, editing, themes and site settings. Deploys are skipped when the export hasn't changed (editing a draft, for example), and only changed files are uploaded. Editors can also click **Deploy now**.
 - To write the export to a folder for another host: `pnpm export <site-slug> [out-dir] --url https://blog.example.com`. Serve the folder at the root of a domain. `/a/<slug>` maps to `a/<slug>.html`, so the host must serve `.html` files for extensionless URLs, or apply the `_redirects` rules.
 
+### Social sharing (LinkedIn, X, Facebook)
+The **Social** tab shares published articles on LinkedIn, X and Facebook. Owners switch networks on and enter their credentials (stored encrypted, never shown again); editors can then share any published article on demand with **Post now**, optionally with their own wording.
+
+- **LinkedIn**: an access token with the `w_member_social` scope (`w_organization_social` for a company page) and the author URN (`urn:li:person:…` or `urn:li:organization:…`). LinkedIn tokens expire after about 60 days.
+- **X**: the API key and secret of your app, plus an access token and secret with Read and Write permission (OAuth 1.0a; they don't expire).
+- **Facebook**: a Page access token (`pages_manage_posts`) and the Page ID.
+- With **Post automatically** on, every article published afterwards (from the admin, the REST API or an AI job) is posted to each ready network about 15 seconds later, or after a pending static deploy has finished so the link works. Articles published before you turned it on are never posted. Each article is posted once per network; a failed post is shown in the list and isn't retried automatically.
+- Posts link to the article under the **Site URL** you set, else the static site, the custom domain or the `BASE_DOMAIN` subdomain. Without a public address nothing is posted.
+- The default text is the title, plus hashtags from the article's tags on X, and the summary on LinkedIn and Facebook. The link is attached as a link card.
+
 ### Roles
 `author` can write drafts and send them for review. `editor` can also publish, edit any article and manage design. `owner` can also change settings, members and API tokens.
 

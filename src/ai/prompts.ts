@@ -15,6 +15,18 @@ export const ARTICLE_SYSTEM = `You are the staff writer for a website running on
 You write complete, publish-ready articles and return them as structured content blocks.
 
 Writing rules:
+- Write like a specific person with opinions, not a neutral explainer. Take a stance and defend it.
+- Vary sentence length a lot. Some sentences should be very short. Others can run longer and wander a bit before landing.
+- No throat-clearing intros ("In today's fast-paced world...", "Let's dive in") and no summary conclusions ("In conclusion...", "Ultimately...").
+- Banned words/phrases: delve, tapestry, landscape, navigate, robust, leverage, seamless, crucial, pivotal, foster, realm, unlock, elevate, game-changer, "it's important to note", "not just X but Y", "whether you're X or Y".
+- Don't use em dashes. Use commas, periods, or parentheses instead.
+- Avoid groups of three ("fast, reliable, and scalable"). Use two items, or four, or one.
+- Don't hedge everything. Cut "can," "may," "often," "generally" unless they're actually needed.
+- Use concrete specifics: real numbers, names, places, dates, a brief anecdote or example. No vague generalities.
+- Minimal formatting: mostly paragraphs, few or no bullet lists, no bolded key phrases, headers only if the piece is long.
+- Contractions are fine. Mild informality is fine. An occasional sentence fragment is fine.
+- Don't end paragraphs with a tidy one-line moral or takeaway.
+- Don't anticipate and answer every possible objection. Leave some things unsaid.
 - Open with a strong first paragraph; never start with "In today's world" or similar filler.
 - Use "heading" blocks (level 2 for sections, level 3 for sub-sections) to structure the piece.
 - Prefer concrete facts, examples and numbers over generic claims. Do not invent statistics, quotes,
@@ -49,7 +61,7 @@ What the fields do:
   (grid | list | magazine [big lead story then grid] | cards | minimal [text-only list]); columns 1-4 for
   grid/cards/magazine; article layout (classic | wide | sidebar [with table of contents]); toggles for
   summaries, dates and reading time on cards.
-- hero: optional banner on the home page (plain | gradient | band | image) with title/subtitle; leave
+- hero: optional banner on the home page (plain | gradient | band | image) with title/subtitle and an optional call-to-action button (ctaLabel + ctaHref; leave both empty for none, keep the current ones unless asked); leave
   title/subtitle empty to use the site name and tagline. Only use "image" with an image URL the user gave
   or the current theme's imageUrl (keep that unless asked to change or remove it); never invent URLs.
 - decoration: background texture (none | dots | grid | gradient | paper), linkStyle (underline | color | highlight).
@@ -80,7 +92,7 @@ Rules:
 
 // Image prompts (sent to the image model; Claude itself doesn't generate images).
 
-const IMAGE_RULES = "No text, letters, captions, logos or watermarks anywhere in the image.";
+const IMAGE_RULES = "No text, letters, captions, logos or watermarks anywhere in the image. Choose just one scene, don't make a collage. Avoid busy cluttered compositions; prefer a single clear subject.";
 
 export function articleImagePrompt(a: { title: string; summary: string; siteName: string }): string {
   return `Editorial cover image for an article titled "${a.title}" on the website "${a.siteName}". ` +
@@ -102,7 +114,7 @@ export function articleUserPrompt(req: ArticleRequest): string {
     `Tone: ${req.tone}`,
     `Length: ${LENGTH_GUIDE[req.length]}`,
     req.existingTitles.length &&
-      `Already published on this site (avoid duplicating these angles):\n${req.existingTitles.map((t) => `- ${t}`).join("\n")}`,
+    `Already published on this site (avoid duplicating these angles):\n${req.existingTitles.map((t) => `- ${t}`).join("\n")}`,
     `Write an article about: ${req.topic}`,
     req.instructions && `Additional instructions:\n${req.instructions}`,
   ]
@@ -115,10 +127,10 @@ export function themeUserPrompt(req: ThemeRequest): string {
     `Website: ${req.site.name}${req.site.tagline ? ` — ${req.site.tagline}` : ""}`,
     `Current theme:\n${JSON.stringify(req.current, null, 2)}`,
     req.palette &&
-      `Color palette supplied by the user (${describePalette(req.palette)}).\n` +
-        `Build the theme colors from this palette: use assigned colors exactly for their roles and give the other ` +
-        `palette colors sensible roles (typically the most saturated as primary/accent). You may derive tints or ` +
-        `shades of palette colors for background, surface, muted and border when needed for readability and contrast.`,
+    `Color palette supplied by the user (${describePalette(req.palette)}).\n` +
+    `Build the theme colors from this palette: use assigned colors exactly for their roles and give the other ` +
+    `palette colors sensible roles (typically the most saturated as primary/accent). You may derive tints or ` +
+    `shades of palette colors for background, surface, muted and border when needed for readability and contrast.`,
     `Design request: ${req.prompt}`,
   ]
     .filter(Boolean)

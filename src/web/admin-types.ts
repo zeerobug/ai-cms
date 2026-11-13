@@ -184,6 +184,8 @@ export interface ThemeDetail {
   spec: unknown;
   /** The hero image ('' = none). */
   heroImageUrl: string;
+  logoUrl: string;
+  hero: { enabled: boolean; title: string; subtitle: string; ctaLabel: string; ctaHref: string };
 }
 
 export interface AiSettings {
@@ -204,6 +206,12 @@ export interface AiSettings {
   themes: { autoApply: boolean; minRoleToAutoApply: Role };
   images: { monthlyLimit: number };
   seo: { autoOptimize: boolean; monthlyLimit: number };
+}
+
+/** Google tag (gtag.js) settings of the public site. */
+export interface AnalyticsSettings {
+  /** Measurement ID such as "G-ABC123XYZ"; empty = no tag. */
+  gtagId: string;
 }
 
 /** Search-engine settings of the public site. */
@@ -227,6 +235,7 @@ export interface SettingsData {
   domain: string | null;
   ai: AiSettings;
   seo: SeoSettings;
+  analytics: AnalyticsSettings;
   /** Public URLs of the sitemap and robots.txt. */
   sitemapUrl: string;
   robotsUrl: string;
@@ -247,6 +256,7 @@ export interface SettingsInput {
   domain: string | null;
   ai: AiSettings;
   seo: SeoSettings;
+  analytics?: AnalyticsSettings;
   /** New key to store; omit/empty to keep the current one. */
   apiKey?: string;
   clearKey?: boolean;
@@ -289,4 +299,68 @@ export interface PublishInput {
   /** New token to store; omit/empty to keep the current one. */
   token?: string;
   clearToken?: boolean;
+}
+
+// ---- social sharing (LinkedIn, X, Facebook) -------------------------------------------
+
+export type SocialNetwork = "linkedin" | "x" | "facebook";
+
+export interface SocialNetworkInfo {
+  network: SocialNetwork;
+  label: string;
+  enabled: boolean;
+  /** Why it can't post yet (missing credentials or ID); null = ready. */
+  gap: string | null;
+  /** The secret fields it needs, and whether each is stored (never the value). */
+  fields: { key: string; label: string; stored: boolean }[];
+}
+
+export interface SocialPostSummary {
+  id: number;
+  articleId: number;
+  articleTitle: string;
+  network: SocialNetwork;
+  trigger: "auto" | "manual";
+  status: "posting" | "posted" | "failed";
+  text: string;
+  url: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface SocialData {
+  networks: SocialNetworkInfo[];
+  auto: boolean;
+  siteUrl: string;
+  linkedinAuthor: string;
+  facebookPageId: string;
+  /** Where articles are linked from (the setting, the static site, custom domain…), or null if the site has no public address. */
+  effectiveSiteUrl: string | null;
+  /** Credentials are stored but can't be decrypted. */
+  unreadable: boolean;
+  /** Something is scheduled or posting. */
+  busy: boolean;
+  canConfigure: boolean;
+  /** Recent published articles, for "Share now". */
+  articles: { id: number; title: string }[];
+  posts: SocialPostSummary[];
+}
+
+export interface SocialInput {
+  networks: SocialNetwork[];
+  auto: boolean;
+  siteUrl: string;
+  linkedinAuthor: string;
+  facebookPageId: string;
+  /** New secrets per network; empty fields keep their stored value. */
+  creds?: Partial<Record<SocialNetwork, Record<string, string>>>;
+  /** Networks whose stored credentials to remove. */
+  clear?: SocialNetwork[];
+}
+
+export interface SocialShareInput {
+  articleId: number;
+  networks: SocialNetwork[];
+  /** Replaces the default wording (title + summary). */
+  text?: string;
 }

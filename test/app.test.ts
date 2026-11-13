@@ -413,6 +413,33 @@ test("articles: cover image from upload or AI, shown on the article and on cards
   assert.ok((await (await fetch(`${base}/s/open/a/${result.slug}`)).text()).includes(`<figure class="cover"><img src="${result.imageUrl}"`));
 });
 
+test("themes: logo is set from the library, shown in the header and survives AI themes", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const item = await (await uploadImage("open", s, PNG)).json();
+  const active = repo.tenantById(open.id)!.active_theme_id!;
+  assert.equal((await call("PUT", `/t/open/themes/${active}/logo`, s, { url: item.url })).status, 200);
+  assert.equal((await getJson(`/t/open/themes/${active}`, s)).logoUrl, item.url);
+  assert.ok((await (await fetch(`${base}/s/open`)).text()).includes(`<img class="logo" src="${item.url}"`));
+  assert.equal((await call("PUT", `/t/open/themes/${active}/logo`, s, { url: "javascript:alert(1)" })).status, 400);
+  assert.equal(repo.themeSpec(repo.theme(open.id, active)).logo.imageUrl, item.url);
+  assert.equal((await call("PUT", `/t/open/themes/${active}/logo`, s, { url: null })).status, 200);
+  assert.ok(!(await (await fetch(`${base}/s/open`)).text()).includes('class="logo"'));
+});
+
+test("themes: hero text and call-to-action button", async () => {
+  const s = await login("owner@x.com", "pw-owner-1");
+  const active = repo.tenantById(open.id)!.active_theme_id!;
+  const put = (b: object) => call("PUT", `/t/open/themes/${active}/hero-text`, s, b);
+  assert.equal((await put({ title: "Hello <b>there</b>", subtitle: "Sub line", ctaLabel: "Read more", ctaHref: "/tag/news" })).status, 200);
+  const home = await (await fetch(`${base}/s/open`)).text();
+  assert.ok(home.includes("Hello &lt;b&gt;there&lt;/b&gt;") && home.includes("Sub line"));
+  assert.match(home, /<a class="cta" href="\/s\/open\/tag\/news">Read more<\/a>/);
+  assert.equal((await put({ title: "", subtitle: "", ctaLabel: "Go", ctaHref: "javascript:alert(1)" })).status, 400);
+  assert.equal((await put({ title: "", subtitle: "", ctaLabel: "Go", ctaHref: "" })).status, 400);
+  assert.equal((await put({ title: "", subtitle: "", ctaLabel: "", ctaHref: "" })).status, 200);
+  assert.ok(!(await (await fetch(`${base}/s/open`)).text()).includes('class="cta"'));
+});
+
 test("themes: hero image set from the library or by the AI theme job", async () => {
   const s = await login("owner@x.com", "pw-owner-1");
   const item = await (await uploadImage("open", s, PNG)).json();

@@ -18,6 +18,7 @@ import { MockProvider } from "../src/ai/mock.js";
 import { isImageUrl, sniffImage } from "../src/content/media.js";
 import { config } from "../src/config.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../src/util/secrets.js";
+import { raw } from "../src/util/html.js";
 import { DEFAULT_THEME, normalizeTheme, PRESETS, ThemeSpecSchema } from "../src/themes/spec.js";
 
 test("markdown round-trips through blocks", () => {
@@ -454,4 +455,19 @@ test("AnthropicProvider sends SEO requests with the SEO system prompt and image 
   assert.ok(p.system[0].text.startsWith("You are an SEO editor"));
   assert.ok(p.messages[0].content.includes("https://img.example/a.jpg") && p.messages[0].content.includes("baking"));
   assert.equal(p.output_config.effort, "low");
+});
+
+test("Google tag: only valid IDs are accepted and rendered, never in previews", () => {
+  assert.equal(TenantSettingsSchema.parse({}).analytics.gtagId, "");
+  assert.equal(TenantSettingsSchema.parse({ analytics: { gtagId: " G-ABC123XYZ " } }).analytics.gtagId, "G-ABC123XYZ");
+  for (const bad of ["<script>", "G-AB'C", "UA", "G-ABC123XYZ');alert(1)//"]) {
+    assert.equal(TenantSettingsSchema.safeParse({ analytics: { gtagId: bad } }).success, false, bad);
+  }
+  const site = { name: "S", tagline: "", base: "", gtagId: "G-ABC123XYZ" };
+  const page = renderHome(site, DEFAULT_THEME, []);
+  assert.ok(page.includes("googletagmanager.com/gtag/js?id=G-ABC123XYZ"));
+  assert.ok(page.includes("gtag('config','G-ABC123XYZ')"));
+  assert.ok(!renderHome({ ...site, gtagId: "" }, DEFAULT_THEME, []).includes("gtag"));
+  assert.ok(!renderHome({ ...site, gtagId: "x');evil()//" }, DEFAULT_THEME, []).includes("evil"));
+  assert.ok(!renderHome(site, DEFAULT_THEME, [], { preview: raw("<b>p</b>") }).includes("gtag"));
 });

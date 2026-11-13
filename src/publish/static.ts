@@ -29,6 +29,7 @@ export function staticSiteInfo(t: Tenant, siteUrl: string): SiteInfo & { url: st
     lang: t.settings.seo.lang,
     description: t.settings.seo.description,
     indexable: t.settings.seo.indexing,
+    gtagId: t.settings.analytics.gtagId,
   };
 }
 

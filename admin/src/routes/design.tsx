@@ -150,7 +150,7 @@ function ThemeCard({ theme: th, canDesign }: { theme: ThemeSummary; canDesign: b
       <div className="swatch">{th.swatch.map((c, i) => <span key={i} style={{ background: c }} />)}</div>
       <div className="muted">{th.description}</div>
       {th.prompt && <p className="muted">“{th.prompt.slice(0, 120)}”</p>}
-      <div className="actions" style={{ marginTop: ".6rem" }}>
+      <div className="actions">
         <a className="btn sm sec" href={`/admin/${tenant.slug}/design/${th.id}/preview`} target="_blank" rel="noreferrer">Preview</a>
         {canDesign && (
           <>

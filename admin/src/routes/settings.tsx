@@ -72,6 +72,7 @@ function SettingsForm({ s }: { s: SettingsData }) {
       domain: field(fd, "domain") || null,
       ai: aiOut,
       seo: seoOut,
+      analytics: { gtagId: field(fd, "gtagId").trim() },
       apiKey: field(fd, "apiKey"),
       clearKey: checked(fd, "clearKey"),
     };
@@ -109,6 +110,8 @@ function SettingsForm({ s }: { s: SettingsData }) {
           <div><label>Content language code</label><input name="seoLang" defaultValue={s.seo.lang} placeholder="en" pattern="[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*" title="A BCP 47 code such as en, fr, pt-BR" /></div>
         </div>
         <label className="check"><input type="checkbox" name="seoIndexing" defaultChecked={s.seo.indexing} /> Let search engines index this site</label>
+        <label>Google tag ID <span className="muted">(optional; adds Google Analytics / gtag.js to every public page, not to previews)</span></label>
+        <input name="gtagId" defaultValue={s.analytics.gtagId} placeholder="G-ABC123XYZ" pattern="(G|GT|AW|DC)-[A-Za-z0-9]{4,20}" title="A Google tag ID such as G-ABC123XYZ" />
         {s.seoMissing > 0 && (
           <p>
             <Link to={`/${tenant.slug}/articles?status=published`}>{s.seoMissing} published article{s.seoMissing === 1 ? " is" : "s are"}</Link> missing search metadata.{" "}

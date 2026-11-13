@@ -32,6 +32,9 @@ const role = z.enum(ROLES);
 export const AI_PROVIDERS = ["anthropic", "openai", "mock"] as const;
 export type AiProviderName = (typeof AI_PROVIDERS)[number];
 
+export const SOCIAL_NETWORKS = ["linkedin", "x", "facebook"] as const;
+export type SocialNetwork = (typeof SOCIAL_NETWORKS)[number];
+
 export const TenantSettingsSchema = z.object({
   ai: z
     .object({
@@ -101,6 +104,19 @@ export const TenantSettingsSchema = z.object({
     })
     .prefault({}),
   /**
+   * Google tag (gtag.js) measurement ID, e.g. "G-ABC123XYZ" ('' = no tag). Only the ID is stored,
+   * never a pasted snippet: the renderer builds the script itself, so no raw HTML/JS gets in.
+   */
+  analytics: z
+    .object({
+      gtagId: z
+        .string()
+        .trim()
+        .regex(/^(?:|(?:G|GT|AW|DC)-[A-Za-z0-9]{4,20})$/)
+        .default(""),
+    })
+    .prefault({}),
+  /**
    * Static publishing: export the public site as static files and deploy them to Netlify.
    * The Netlify access token is stored encrypted outside these settings (tenants.publish_token).
    */
@@ -114,6 +130,26 @@ export const TenantSettingsSchema = z.object({
         .default(""),
       /** Redeploy automatically (debounced) whenever the public site changes. */
       auto: z.boolean().default(true),
+    })
+    .prefault({}),
+  /**
+   * Social sharing: post published articles to LinkedIn, X and Facebook. The access tokens live
+   * encrypted outside these settings (tenants.social_creds); only non-secret identifiers are here.
+   */
+  social: z
+    .object({
+      /** Networks that are switched on (they also need credentials to actually post). */
+      networks: z.array(z.enum(SOCIAL_NETWORKS)).max(SOCIAL_NETWORKS.length).default([]),
+      /** Post automatically when an article is published. */
+      auto: z.boolean().default(false),
+      /** Auto-post only articles published at or after this UTC time ('YYYY-MM-DD HH:MM:SS'), so turning auto on never floods the feeds with old articles. */
+      autoSince: z.string().regex(/^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)?$/).default(""),
+      /** Public root URL articles are linked under ('' = the static site, custom domain or BASE_DOMAIN subdomain). */
+      siteUrl: z.string().trim().max(200).regex(/^(https:\/\/[^\s/?#]+(\/[^\s?#]*)?)?$/).default(""),
+      /** LinkedIn author, e.g. urn:li:person:abc123 or urn:li:organization:12345. */
+      linkedinAuthor: z.string().trim().regex(/^(urn:li:(person|organization):[A-Za-z0-9_-]{1,64})?$/).default(""),
+      /** Facebook Page ID. */
+      facebookPageId: z.string().trim().regex(/^\d{0,30}$/).default(""),
     })
     .prefault({}),
 });

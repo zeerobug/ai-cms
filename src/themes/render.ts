@@ -24,6 +24,20 @@ export interface SiteInfo {
   description?: string;
   /** false = ask search engines not to index the site. Default true. */
   indexable?: boolean;
+  /** Google tag measurement ID (validated by the settings schema); the tag is added to public pages only. */
+  gtagId?: string;
+}
+
+const GTAG_ID_RE = /^(?:G|GT|AW|DC)-[A-Za-z0-9]{4,20}$/;
+
+/** Google tag snippet. Skipped for previews and for IDs that don't look like one. */
+function gtagSnippet(site: SiteInfo, o: ShellOpts): Raw {
+  const id = site.gtagId;
+  if (!id || o.preview || !GTAG_ID_RE.test(id)) return raw("");
+  return raw(
+    `<script async src="https://www.googletagmanager.com/gtag/js?id=${id}"></script>` +
+      `<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','${id}');</script>`,
+  );
 }
 
 export interface ArticleView {
@@ -99,6 +113,8 @@ a{color:var(--primary)}
 .tagline{color:var(--muted);font-size:.9rem}
 .nav{display:flex;gap:1.1rem;flex-wrap:wrap;margin-left:auto}
 .nav a{color:var(--text);text-decoration:none;font-size:.95rem}.nav a:hover{color:var(--primary)}
+.brand .logo{display:block;max-height:2.6rem;width:auto;max-width:14rem}
+.hdr-centered .brand .logo{max-height:4rem}
 .hdr-centered .site-header .wrap{flex-direction:column;gap:.4rem;text-align:center}
 .hdr-centered .brand{font-size:2.4rem}.hdr-centered .nav{margin:0 auto;padding-top:.5rem;border-top:1px solid var(--border)}
 .hdr-split .site-header .wrap{justify-content:space-between}
@@ -109,6 +125,9 @@ a{color:var(--primary)}
 /* Hero */
 .hero{padding:calc(var(--gap)*3) 0 calc(var(--gap)*2)}
 .hero h1{margin:0 0 .4em}.hero p{color:var(--muted);font-size:1.2rem;max-width:44rem;margin:0}
+.hero .hero-cta{margin-top:1.5rem}
+.cta{display:inline-block;padding:.7em 1.4em;border-radius:var(--radius);background:var(--primary);color:var(--on-primary)!important;font-weight:600;text-decoration:none!important}
+.hero-band .cta,.hero-gradient .cta,.hero-image .cta{background:var(--on-primary);color:var(--primary)!important}
 .hero-center{text-align:center}.hero-center p{margin:0 auto}
 .hero-band{background:var(--primary);color:var(--on-primary)}.hero-band p{color:var(--on-primary);opacity:.85}
 .hero-gradient{background:linear-gradient(135deg,var(--primary),var(--accent));color:var(--on-primary)}
@@ -277,6 +296,7 @@ function shell(site: SiteInfo, theme: ThemeSpec, o: ShellOpts): string {
   return `<!doctype html>${html`<html lang="${site.lang || "en"}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${o.title}</title>
+${gtagSnippet(site, o)}
 ${seoHead(site, o)}
 ${o.feedHref ? html`<link rel="alternate" type="application/rss+xml" title="${site.name}" href="${o.feedHref}">` : ""}
 ${fonts ? html`<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="${fonts}">` : ""}
@@ -284,7 +304,7 @@ ${fonts ? html`<link rel="preconnect" href="https://fonts.gstatic.com" crossorig
 </head><body class="${bodyClasses(theme)}">
 ${o.preview ?? ""}
 <header class="site-header"><div class="wrap">
-  <a class="brand" href="${site.base || "/"}">${site.name}</a>
+  <a class="brand" href="${site.base || "/"}">${theme.logo.imageUrl && safeUrl(theme.logo.imageUrl) ? html`<img class="logo" src="${safeUrl(theme.logo.imageUrl)}" alt="${site.name}">` : site.name}</a>
   ${site.tagline ? html`<span class="tagline">${site.tagline}</span>` : ""}
   <nav class="nav">${nav}</nav>
 </div></header>
@@ -338,9 +358,11 @@ export function renderHome(
   const heroSub = opts.heading ? "" : h.subtitle || site.tagline;
   const showHero = opts.heading !== undefined || h.enabled;
   const heroStyle = h.style === "image" && h.imageUrl ? raw(` style="background-image:linear-gradient(rgb(0 0 0/.45),rgb(0 0 0/.45)),url('${escapeHtml(h.imageUrl)}')"`) : "";
+  const ctaHref = h.ctaLabel ? safeUrl(h.ctaHref.startsWith("/") ? site.base + h.ctaHref : h.ctaHref) : null;
+  const cta = ctaHref && !opts.heading ? html`<p class="hero-cta"><a class="cta" href="${ctaHref}">${h.ctaLabel}</a></p>` : "";
   const body = html`
     ${showHero ? html`<section class="hero hero-${opts.heading ? "plain" : h.style} hero-${h.align}"${heroStyle}><div class="wrap">
-      <h1>${heroTitle}</h1>${heroSub ? html`<p>${heroSub}</p>` : ""}
+      <h1>${heroTitle}</h1>${heroSub ? html`<p>${heroSub}</p>` : ""}${cta}
     </div></section>` : ""}
     <div class="wrap">
       ${articles.length

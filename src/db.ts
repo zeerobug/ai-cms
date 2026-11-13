@@ -131,6 +131,25 @@ CREATE TABLE IF NOT EXISTS site_deploys (
   finished_at TEXT
 );
 
+-- Articles shared to social networks (one row per attempt).
+CREATE TABLE IF NOT EXISTS social_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+  network TEXT NOT NULL CHECK (network IN ('linkedin','x','facebook')),
+  trigger TEXT NOT NULL CHECK (trigger IN ('auto','manual')),
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'posting' CHECK (status IN ('posting','posted','failed')),
+  text TEXT NOT NULL DEFAULT '',
+  post_id TEXT,
+  url TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_tenant ON social_posts(tenant_id, id);
+CREATE INDEX IF NOT EXISTS idx_social_article ON social_posts(tenant_id, article_id, network);
 CREATE INDEX IF NOT EXISTS idx_deploys_tenant ON site_deploys(tenant_id, id);
 CREATE INDEX IF NOT EXISTS idx_media_tenant ON media(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_articles_tenant_status ON articles(tenant_id, status, published_at);
@@ -145,6 +164,8 @@ export function openDb(file = config.dbPath): DB {
   addColumnIfMissing(db, "tenants", "ai_api_key", "TEXT");
   // Encrypted hosting-provider token (Netlify) for static publishing.
   addColumnIfMissing(db, "tenants", "publish_token", "TEXT");
+  // Encrypted JSON of social network credentials (LinkedIn / X / Facebook tokens).
+  addColumnIfMissing(db, "tenants", "social_creds", "TEXT");
   // Article cover image (https URL or /media/... path) and its alt text.
   addColumnIfMissing(db, "articles", "image_url", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "articles", "image_alt", "TEXT NOT NULL DEFAULT ''");
@@ -157,6 +178,9 @@ export function openDb(file = config.dbPath): DB {
   ).run();
   db.prepare(
     "UPDATE site_deploys SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status = 'running'",
+  ).run();
+  db.prepare(
+    "UPDATE social_posts SET status='failed', error='Interrupted by server restart', finished_at=datetime('now') WHERE status = 'posting'",
   ).run();
   return db;
 }
