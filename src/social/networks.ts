@@ -42,7 +42,13 @@ export function networkGap(network: SocialNetwork, creds: SocialCreds, ids: Soci
   return null;
 }
 
+export interface PostImage {
+  data: Uint8Array;
+  mime: string;
+}
 export interface PostContent {
+  /** Picture to attach (only X uses it for now; posting continues without it if the upload fails). */
+  image?: PostImage;
   /** The text of the post (already fitted to the network's limits). */
   text: string;
   /** The article's public URL. */
@@ -53,6 +59,8 @@ export interface PostContent {
 export interface PostResult {
   id: string;
   url: string | null;
+  /** Something worth showing even though the post went out (e.g. the picture couldn't be attached). */
+  note?: string;
 }
 /** Publishes one post. Throws an Error with a readable message on failure. */
 export type SocialPoster = (network: SocialNetwork, creds: SocialCreds, ids: SocialIds, post: PostContent) => Promise<PostResult>;
@@ -92,6 +100,51 @@ export function composePost(network: SocialNetwork, a: { title: string; summary:
   }
   const body = custom || [a.title, a.summary].filter(Boolean).join("\n\n");
   return clip([body, tags].filter(Boolean).join("\n\n"), LIMITS[network]);
+}
+
+/** The question every X post ends with when no better one is available. */
+export const FALLBACK_QUESTION = "What's your take?";
+
+/** X's weighted length: most Latin text counts 1 per character; "…", CJK, emoji and the like count 2. */
+export function xLength(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    n += c <= 4351 || (c >= 8192 && c <= 8205) || (c >= 8208 && c <= 8223) || (c >= 8242 && c <= 8247) ? 1 : 2;
+  }
+  return n;
+}
+
+/** Cuts `s` to at most `max` weighted characters, ending in "…" (which weighs 2) when something was cut. */
+function clipX(s: string, max: number): string {
+  if (xLength(s) <= max) return s;
+  let out = "";
+  for (const ch of s) {
+    if (xLength(out + ch) > max - 2) break;
+    out += ch;
+  }
+  return out.trimEnd() + "…";
+}
+
+/**
+ * The X post: a hook, the link, then a question, so the post ends by inviting a reply. `copy` is the
+ * AI's hook + question; without it the article title is the hook. Fitted to 280 weighted characters
+ * (the link counts 23); hashtags are reserved first, the hook is clipped to fit.
+ */
+export function composeXPost(a: { title: string; tags: string[] }, url: string, copy?: { hook: string; question: string } | null): string {
+  const room = LIMITS.x - X_URL - 4; // two blank-line separators
+  let question = copy?.question.trim() || FALLBACK_QUESTION;
+  if (!question.endsWith("?")) question = question.replace(/[.!…\s]+$/, "") + "?";
+  question = clipX(question, Math.floor(room / 2));
+  if (!question.endsWith("?")) question = question.slice(0, -1).trimEnd() + "?";
+  // Hashtags are reserved first (up to 3, at most 45 characters): the hook is shortened to make room.
+  const tagList = hashtags(a.tags).slice(0, 3);
+  while (tagList.length && xLength(tagList.join(" ")) > 45) tagList.pop();
+  const tags = tagList.join(" ");
+  const tagRoom = tags ? xLength(tags) + 1 : 0;
+  let hook = clipX((copy?.hook.trim() || a.title).replace(/\s+/g, " "), room - xLength(question) - tagRoom);
+  if (tags) hook = `${hook} ${tags}`;
+  return `${hook}\n\n${url}\n\n${question}`;
 }
 
 // ---- clients -----------------------------------------------------------------------------
@@ -169,17 +222,43 @@ export function oauth1Header(
   return "OAuth " + Object.keys(params).sort().map((k) => `${pct(k)}="${pct(params[k])}"`).join(", ");
 }
 
+/** Uploads a picture and returns its media id. A multipart body isn't part of the OAuth 1.0a signature. */
+async function uploadXImage(f: Fetch, c: NonNullable<SocialCreds["x"]>, img: PostImage): Promise<string> {
+  const url = "https://api.x.com/2/media/upload";
+  const form = new FormData();
+  form.set("media_category", "tweet_image");
+  form.set("media_type", img.mime);
+  form.set("media", new Blob([img.data as BlobPart], { type: img.mime }), "image");
+  const res = await f(url, { method: "POST", headers: { authorization: oauth1Header("POST", url, c) }, body: form, signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) return failure(res, "X media upload");
+  const j = (await res.json().catch(() => null)) as { data?: { id?: string }; media_id_string?: string } | null;
+  const id = j?.data?.id ?? j?.media_id_string;
+  if (!id) throw new Error("X media upload returned no media id.");
+  return id;
+}
+
 async function postX(f: Fetch, c: NonNullable<SocialCreds["x"]>, p: PostContent): Promise<PostResult> {
   const url = "https://api.x.com/2/tweets";
+  let mediaId: string | null = null;
+  let note: string | undefined;
+  if (p.image) {
+    try {
+      mediaId = await uploadXImage(f, c, p.image);
+    } catch (e) {
+      // Post the text anyway, but say so: the person should know the picture is missing.
+      note = `Posted without the image: ${e instanceof Error ? e.message : String(e)}`.slice(0, 400);
+      console.error("[social] X image skipped:", note);
+    }
+  }
   const res = await f(url, {
     method: "POST",
     headers: { authorization: oauth1Header("POST", url, c), "content-type": "application/json" },
-    body: JSON.stringify({ text: p.text }),
+    body: JSON.stringify({ text: p.text, ...(mediaId ? { media: { media_ids: [mediaId] } } : {}) }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) return failure(res, "X");
   const id = ((await res.json().catch(() => null)) as { data?: { id?: string } } | null)?.data?.id ?? "";
-  return { id, url: id ? `https://x.com/i/status/${id}` : null };
+  return { id, url: id ? `https://x.com/i/status/${id}` : null, note };
 }
 
 async function postFacebook(f: Fetch, token: string, pageId: string, p: PostContent): Promise<PostResult> {

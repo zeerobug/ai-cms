@@ -88,6 +88,24 @@ export interface SiteSeoRequest {
   effort: Effort;
 }
 
+/** The copy of a social post for one article: a hook and a closing question (the link is added around them). */
+export const SocialCopySchema = z.object({
+  hook: z.string().describe("2-3 punchy sentences that make people want to read the article. No URL, no hashtags, no question."),
+  question: z.string().describe("One short question about the topic that invites replies. Must end with a question mark."),
+});
+export type SocialCopy = z.infer<typeof SocialCopySchema>;
+
+export interface SocialRequest {
+  site: { name: string; tagline: string };
+  language: string;
+  brandVoice: string;
+  article: { title: string; summary: string; tags: string[]; markdown: string };
+  /** Hard limit for hook + question together, in characters. */
+  maxChars: number;
+  model: string;
+  effort: Effort;
+}
+
 export interface ImageRequest {
   prompt: string;
   aspect: ImageAspect;
@@ -115,6 +133,8 @@ export interface AIProvider {
   designTheme(req: ThemeRequest): Promise<AiResult<AiTheme>>;
   optimizeSeo(req: SeoRequest): Promise<AiResult<SeoDraft>>;
   optimizeSiteSeo(req: SiteSeoRequest): Promise<AiResult<SiteSeo>>;
+  /** Optional: engaging social post copy. Without it, sharing falls back to the article title. */
+  writeSocialPost?(req: SocialRequest): Promise<AiResult<SocialCopy>>;
   /** Only image-capable providers implement this (OpenAI, mock); Claude outputs text only. */
   generateImage?(req: ImageRequest): Promise<AiResult<GeneratedImage>>;
 }

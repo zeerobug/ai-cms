@@ -68,6 +68,8 @@ export interface ArticleSummary {
   updatedAt: string;
   /** Published but missing search-engine metadata (title, description, tags or alt text). */
   seoMissing: boolean;
+  /** The article's most recent social post attempt, if any. */
+  social: { network: SocialNetwork; status: "posting" | "posted" | "failed"; url: string | null; error: string | null } | null;
 }
 
 export interface JobSummary {

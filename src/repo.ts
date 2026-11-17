@@ -789,6 +789,10 @@ export class Repo {
       limit,
     );
   }
+  /** The most recent social post attempt for an article, any network. */
+  latestSocialPost(tenantId: number, articleId: number) {
+    return one<SocialPostRow>(this.db, "SELECT * FROM social_posts WHERE tenant_id = ? AND article_id = ? ORDER BY id DESC LIMIT 1", tenantId, articleId);
+  }
   /** Published articles (since `since`) that have no post attempt yet on `network`, oldest first. */
   articlesToShare(tenantId: number, network: SocialNetwork, since: string, limit = 10) {
     return all<ArticleRow>(

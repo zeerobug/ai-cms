@@ -113,7 +113,7 @@ export function ArticleTable({ base, rows }: { base: string; rows: ArticleSummar
   return (
     <table>
       <thead>
-        <tr><th>Title</th><th>Status</th><th>Source</th><th>Updated</th><th></th></tr>
+        <tr><th>Title</th><th>Status</th><th>Source</th><th>Shared</th><th>Updated</th><th></th></tr>
       </thead>
       <tbody>
         {rows.map((a) => (
@@ -124,6 +124,17 @@ export function ArticleTable({ base, rows }: { base: string; rows: ArticleSummar
             </td>
             <td><StatusBadge status={a.status} /></td>
             <td>{a.source === "ai" ? <AiBadge /> : "human"}</td>
+            <td>
+              {a.social ? (
+                <>
+                  <StatusBadge status={a.social.status} /> <span className="muted">{a.social.network.toUpperCase()}</span>
+                  {a.social.status === "posted" && a.social.url && <> <a href={a.social.url} target="_blank" rel="noreferrer">view ↗</a></>}
+                  {a.social.error && <div className="muted" style={{ fontSize: "0.85em" }}>{a.social.error}</div>}
+                </>
+              ) : (
+                <span className="muted">–</span>
+              )}
+            </td>
             <td className="muted">{a.updatedAt}</td>
             <td><a href={`/admin${base}/articles/${a.id}/preview`} target="_blank" rel="noreferrer">Preview</a></td>
           </tr>

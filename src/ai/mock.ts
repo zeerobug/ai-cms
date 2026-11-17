@@ -2,7 +2,7 @@ import zlib from "node:zlib";
 import { markdownToBlocks, plainText, slugify, type Block } from "../content/blocks.js";
 import { paletteToColors } from "../themes/palette.js";
 import type { AiTheme } from "../themes/spec.js";
-import type { AIProvider, ArticleDraft, ArticleRequest, ImageRequest, SeoDraft, SeoRequest, SiteSeo, SiteSeoRequest, ThemeRequest } from "./provider.js";
+import type { AIProvider, ArticleDraft, ArticleRequest, ImageRequest, SeoDraft, SeoRequest, SiteSeo, SiteSeoRequest, SocialCopy, SocialRequest, ThemeRequest } from "./provider.js";
 
 /**
  * Deterministic, offline stand-in for the real model. Used for demos without an API key
@@ -127,6 +127,15 @@ export class MockProvider implements AIProvider {
     const value: SiteSeo = {
       description: `${req.site.name}${req.site.tagline ? `: ${req.site.tagline}` : ""}. ${topics ? `Articles about ${topics}.` : "Articles, guides and news."}`.slice(0, 155),
       suggestions: req.recentTitles.length < 5 ? ["Publish more articles so search engines have more pages to rank."] : [],
+    };
+    return { value, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
+  }
+
+  async writeSocialPost(req: SocialRequest) {
+    await sleep(this.delayMs);
+    const value: SocialCopy = {
+      hook: `${req.article.title}: the part most people get wrong.`,
+      question: `What would you try first?`,
     };
     return { value, usage: { model: "mock", inputTokens: 0, outputTokens: 0 } };
   }

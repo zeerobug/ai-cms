@@ -33,6 +33,7 @@ export function createApp(
   // Social posts link to the public site, so they wait for a pending static deploy (at most 5 minutes).
   const social = new SocialService(repo, opts.socialPoster ?? httpPoster(), {
     debounceMs: opts.socialDebounceMs,
+    compose: (t, articleId, maxChars) => ai.socialCopy(t, articleId, maxChars),
     settle: async (tenantId) => {
       for (let i = 0; i < 300 && publish.isBusy(tenantId); i++) await new Promise((r) => setTimeout(r, 1000));
     },

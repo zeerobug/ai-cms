@@ -3,7 +3,8 @@ import { safeJson } from "../repo.js";
 import { config } from "../config.js";
 import { SOCIAL_NETWORKS, type SocialNetwork } from "../tenancy.js";
 import { decryptSecret, encryptSecret } from "../util/secrets.js";
-import { composePost, networkGap, type SocialCreds, type SocialIds, type SocialPoster } from "./networks.js";
+import { MEDIA_FILE_RE } from "../content/media.js";
+import { composePost, composeXPost, networkGap, type PostImage, type SocialCreds, type SocialIds, type SocialPoster } from "./networks.js";
 
 export class SocialError extends Error {
   constructor(message: string, public status = 409) {
@@ -27,16 +28,23 @@ export class SocialService {
   private debounceMs: number;
 
   /**
+   * @param opts.compose writes the hook + closing question for an X post (AI); null = use the plain wording.
    * @param opts.settle resolves when the public site is safe to link to (e.g. after a pending static deploy).
    */
   constructor(
     private repo: Repo,
     private poster: SocialPoster,
-    opts: { debounceMs?: number; settle?: (tenantId: number) => Promise<void> } = {},
+    opts: {
+      debounceMs?: number;
+      settle?: (tenantId: number) => Promise<void>;
+      compose?: (t: Tenant, articleId: number, maxChars: number) => Promise<{ hook: string; question: string } | null>;
+    } = {},
   ) {
     this.debounceMs = opts.debounceMs ?? 15_000;
     this.settle = opts.settle ?? (async () => {});
+    this.compose = opts.compose ?? (async () => null);
   }
+  private compose: (t: Tenant, articleId: number, maxChars: number) => Promise<{ hook: string; question: string } | null>;
   private settle: (tenantId: number) => Promise<void>;
 
   // ---- credentials -----------------------------------------------------------
@@ -176,6 +184,16 @@ export class SocialService {
     this.queues.set(tenantId, tail);
   }
 
+  /** The article's cover, when it is one of the site's own uploads that X accepts (≤ 5 MB). */
+  private coverImage(t: Tenant, a: ArticleRow): PostImage | undefined {
+    const prefix = `/media/${t.slug}/`;
+    if (!a.image_url.startsWith(prefix)) return undefined;
+    const file = a.image_url.slice(prefix.length);
+    if (!MEDIA_FILE_RE.test(file)) return undefined;
+    const m = this.repo.mediaData(t.id, file);
+    return m && m.data.byteLength <= 5 * 1024 * 1024 ? { data: m.data, mime: m.mime } : undefined;
+  }
+
   /** Posts one article to one network and records the outcome on the (already created) record `id`. */
   private async send(t: Tenant, article: ArticleRow, network: SocialNetwork, url: string, id: number, override?: string) {
     let text = "";
@@ -184,9 +202,16 @@ export class SocialService {
       const gap = networkGap(network, creds, SocialService.ids(t));
       if (gap) throw new Error(gap);
       const tags = safeJson<string[]>(article.tags, []);
-      text = composePost(network, { title: article.title, summary: article.summary, tags }, url, override);
-      const res = await this.poster(network, creds, SocialService.ids(t), { text, url, title: article.title, description: article.summary || article.seo_description });
-      this.repo.finishSocialPost(t.id, id, { status: "posted", text, postId: res.id, url: res.url });
+      let image: PostImage | undefined;
+      if (network === "x" && !override) {
+        const copy = await this.compose(t, article.id, 210);
+        text = composeXPost({ title: article.title, tags }, url, copy);
+      } else {
+        text = composePost(network, { title: article.title, summary: article.summary, tags }, url, override);
+      }
+      if (network === "x") image = this.coverImage(t, article);
+      const res = await this.poster(network, creds, SocialService.ids(t), { text, url, image, title: article.title, description: article.summary || article.seo_description });
+      this.repo.finishSocialPost(t.id, id, { status: "posted", text, postId: res.id, url: res.url, error: res.note ?? null });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.repo.finishSocialPost(t.id, id, { status: "failed", text, error: msg.slice(0, 500) });

@@ -770,6 +770,10 @@ function makeArticleSummary(repo: Repo) {
     source: a.source,
     updatedAt: a.updated_at,
     seoMissing: a.status === "published" && seoGaps(repo.seoFields(a)).length > 0,
+    social: (() => {
+      const p = repo.latestSocialPost(a.tenant_id, a.id);
+      return p ? { network: p.network, status: p.status, url: p.url, error: p.error } : null;
+    })(),
   });
 }
 

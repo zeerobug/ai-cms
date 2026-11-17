@@ -1,6 +1,6 @@
 import { describePalette } from "../themes/palette.js";
 import { FONTS } from "../themes/spec.js";
-import type { ArticleRequest, SeoRequest, SiteSeoRequest, ThemeRequest } from "./provider.js";
+import type { ArticleRequest, SeoRequest, SiteSeoRequest, SocialRequest, ThemeRequest } from "./provider.js";
 
 // Prompts shared by every LLM provider, so all backends get the same instructions.
 
@@ -168,6 +168,37 @@ export function siteSeoUserPrompt(req: SiteSeoRequest): string {
       ? `Recent articles:\n${req.recentTitles.map((t) => `- ${t}`).join("\n")}`
       : "The site has no published articles yet.",
     "Write the search-engine metadata for the home page of this website.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export const SOCIAL_SYSTEM = `You write posts for X (Twitter) that make people click through to an article on the site.
+
+Rules:
+- Base everything on what the article actually says. Never invent facts, numbers or claims, and never promise
+  what the article doesn't deliver.
+- hook: 2-3 short, punchy sentences. Open with the most surprising, useful or relatable idea from the article,
+  create curiosity, and leave the full answer for the article ("here's why", "the catch:"). Plain language, the
+  site's brand voice if one is given, in the requested language.
+- question: one short, specific question about the topic that a reader wants to answer (not "What do you think?").
+  It must end with a question mark.
+- No URL, no hashtags, no emojis other than at most one in the hook, no ALL CAPS, no engagement bait like
+  "RT if you agree".
+- hook and question together must fit the character limit given.`;
+
+export function socialUserPrompt(req: SocialRequest): string {
+  const body = req.article.markdown.length > 6000 ? req.article.markdown.slice(0, 6000) + "\n[…]" : req.article.markdown;
+  return [
+    `Website: ${req.site.name}${req.site.tagline ? ` — ${req.site.tagline}` : ""}`,
+    `Language: ${req.language}`,
+    req.brandVoice && `Brand voice: ${req.brandVoice}`,
+    `Character limit for hook + question together: ${req.maxChars}`,
+    `Article title: ${req.article.title}`,
+    req.article.summary && `Summary: ${req.article.summary}`,
+    req.article.tags.length && `Tags: ${req.article.tags.join(", ")}`,
+    `Article body (Markdown):\n${body}`,
+    "Write the X post for this article.",
   ]
     .filter(Boolean)
     .join("\n\n");

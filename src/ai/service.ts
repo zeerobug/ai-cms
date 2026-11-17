@@ -14,7 +14,7 @@ import { AnthropicProvider } from "./anthropic.js";
 import { MockProvider } from "./mock.js";
 import { OpenAIProvider } from "./openai.js";
 import { articleImagePrompt, heroImagePrompt } from "./prompts.js";
-import type { AIProvider, Usage } from "./provider.js";
+import type { AIProvider, SocialCopy, Usage } from "./provider.js";
 
 export class PolicyError extends Error {
   constructor(message: string, public status = 403) {
@@ -276,6 +276,34 @@ export class AiService {
       return this.requestSeo(t, actor, { target: "article", articleId, mode: "fill" });
     } catch (err) {
       if (!(err instanceof PolicyError)) console.error("[ai] auto SEO skipped:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Engaging copy (hook + closing question) for an X post about an article. Best effort: returns null when
+   * AI is off, the provider can't write it, or anything fails, so sharing falls back to the plain wording.
+   */
+  async socialCopy(t: Tenant, articleId: number, maxChars: number): Promise<SocialCopy | null> {
+    if (!t.settings.ai.enabled) return null;
+    try {
+      const provider = this.providerFor(t);
+      const row = this.repo.article(t.id, articleId);
+      if (!provider.writeSocialPost || !row) return null;
+      const view = this.repo.toView(row);
+      const s = t.settings.ai;
+      const res = await provider.writeSocialPost({
+        site: { name: t.name, tagline: t.tagline },
+        language: s.articles.language,
+        brandVoice: s.articles.brandVoice,
+        article: { title: row.title, summary: row.summary, tags: view.tags, markdown: blocksToMarkdown(view.blocks) },
+        maxChars,
+        model: s.model,
+        effort: s.effort,
+      });
+      return res.value;
+    } catch (err) {
+      console.error("[ai] social copy skipped:", err instanceof Error ? err.message : err);
       return null;
     }
   }

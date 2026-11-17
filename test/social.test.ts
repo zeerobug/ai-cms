@@ -6,7 +6,7 @@ import { createApp } from "../src/app.js";
 import { hashPassword } from "../src/auth.js";
 import { markdownToBlocks } from "../src/content/blocks.js";
 import { openDb } from "../src/db.js";
-import { composePost, hashtags, httpPoster, oauth1Header, type SocialPoster } from "../src/social/networks.js";
+import { composePost, composeXPost, hashtags, xLength, httpPoster, oauth1Header, type SocialPoster } from "../src/social/networks.js";
 
 const article = { title: "Hello world", summary: "A short summary.", tags: ["news", "c#", "big data"] };
 
@@ -27,6 +27,29 @@ test("composePost: X fits 280 with the URL counted as 23; LinkedIn/Facebook keep
   assert.ok(!li.includes(url));
   assert.ok(composePost("facebook", { ...article, summary: "s".repeat(9000) }, url).length <= 5000);
   assert.ok(composePost("linkedin", article, url, "My own words").startsWith("My own words"));
+});
+
+test("composeXPost: hook, link, then a closing question, within 280 characters", () => {
+  const url = "https://example.com/a/hello-world";
+  const counted = (t: string) => xLength(t.replace(url, "u".repeat(23)));
+
+  const ai = composeXPost(article, url, { hook: "Most people get this wrong. Here is why.", question: "Which mistake have you made" });
+  assert.ok(ai.startsWith("Most people get this wrong. Here is why. #news #c #bigdata\n\n"));
+  assert.ok(ai.includes(`\n\n${url}\n\n`));
+  assert.ok(ai.endsWith("Which mistake have you made?"));
+
+  const plain = composeXPost(article, url);
+  assert.ok(plain.startsWith("Hello world"));
+  assert.ok(plain.endsWith("?"));
+
+  const long = composeXPost(article, url, { hook: "H".repeat(600), question: "Q".repeat(600) });
+  assert.ok(counted(long) <= 280, `too long: ${counted(long)}`);
+  assert.ok(long.endsWith("?") && long.includes(url));
+  assert.equal(xLength("a…b"), 4); // "…" counts 2 on X
+  const cut = composeXPost({ title: "T", tags: ["cardamom", "spicefacts", "baking"] }, url, { hook: "word ".repeat(60), question: "Do you use cardamom in coffee or baking?" });
+  assert.ok(counted(cut) <= 280, `too long: ${counted(cut)}`);
+  assert.ok(counted(cut) >= 270, "should use the room, not leave a big gap");
+  assert.ok(long.split("\n\n")[0].endsWith("#news #c #bigdata"), "hashtags survive a long hook");
 });
 
 test("oauth1Header: stable HMAC-SHA1 signature with percent-encoded parts", () => {
@@ -56,10 +79,24 @@ test("httpPoster: request shapes and error messages", async () => {
   assert.match((calls[1].init.headers as Record<string, string>).authorization, /^OAuth /);
   assert.deepEqual(JSON.parse(String(calls[1].init.body)), { text: post.text });
 
+  // With a picture: upload first (multipart), then attach its id to the post; a failed upload still posts the text.
+  const seq = [Response.json({ data: { id: "m1" } }), Response.json({ data: { id: "43" } }, { status: 201 })];
+  const xi = await httpPoster((async (url: string | URL | Request, init?: RequestInit) => (calls.push({ url: String(url), init: init! }), seq.shift()!)) as typeof fetch)(
+    "x", { x: { apiKey: "a", apiSecret: "b", accessToken: "c", accessSecret: "d" } }, ids, { ...post, image: { data: new Uint8Array([1, 2, 3]), mime: "image/png" } });
+  assert.equal(xi.id, "43");
+  assert.match(calls[2].url, /\/2\/media\/upload$/);
+  assert.ok(calls[2].init.body instanceof FormData);
+  assert.deepEqual(JSON.parse(String(calls[3].init.body)), { text: post.text, media: { media_ids: ["m1"] } });
+  const seq2 = [Response.json({ title: "Forbidden" }, { status: 403 }), Response.json({ data: { id: "44" } }, { status: 201 })];
+  const noImage = await httpPoster((async (url: string | URL | Request, init?: RequestInit) => (calls.push({ url: String(url), init: init! }), seq2.shift()!)) as typeof fetch)(
+    "x", { x: { apiKey: "a", apiSecret: "b", accessToken: "c", accessSecret: "d" } }, ids, { ...post, image: { data: new Uint8Array([1]), mime: "image/png" } });
+  assert.deepEqual(JSON.parse(String(calls[5].init.body)), { text: post.text });
+  assert.match(noImage.note ?? "", /^Posted without the image: .*Forbidden/);
+
   const fb = await httpPoster(reply(Response.json({ id: "123_456" })))("facebook", { facebook: { token: "pt" } }, ids, post);
   assert.equal(fb.id, "123_456");
-  assert.match(calls[2].url, /\/123\/feed$/);
-  const form = new URLSearchParams(String(calls[2].init.body));
+  assert.match(calls[6].url, /\/123\/feed$/);
+  const form = new URLSearchParams(String(calls[6].init.body));
   assert.equal(form.get("link"), post.url);
   assert.equal(form.get("access_token"), "pt");
 

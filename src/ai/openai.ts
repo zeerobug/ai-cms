@@ -3,7 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import type { z } from "zod";
 import { config } from "../config.js";
 import { AiThemeSchema } from "../themes/spec.js";
-import { ARTICLE_SYSTEM, articleUserPrompt, SEO_SYSTEM, seoUserPrompt, siteSeoUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
+import { ARTICLE_SYSTEM, articleUserPrompt, SEO_SYSTEM, seoUserPrompt, siteSeoUserPrompt, SOCIAL_SYSTEM, socialUserPrompt, THEME_SYSTEM, themeUserPrompt } from "./prompts.js";
 import {
   AiRefusalError,
   ArticleDraftSchema,
@@ -14,6 +14,8 @@ import {
   SeoDraftSchema,
   type SeoRequest,
   SiteSeoSchema,
+  SocialCopySchema,
+  type SocialRequest,
   type SiteSeoRequest,
   type GeneratedImage,
   type ImageRequest,
@@ -49,6 +51,10 @@ export class OpenAIProvider implements AIProvider {
 
   async optimizeSeo(req: SeoRequest) {
     return this.structured(SEO_SYSTEM, seoUserPrompt(req), SeoDraftSchema, "seo", req.model, req.effort);
+  }
+
+  async writeSocialPost(req: SocialRequest) {
+    return this.structured(SOCIAL_SYSTEM, socialUserPrompt(req), SocialCopySchema, "social_post", req.model, req.effort);
   }
 
   async optimizeSiteSeo(req: SiteSeoRequest) {
