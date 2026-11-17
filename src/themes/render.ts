@@ -188,7 +188,6 @@ a{color:var(--primary)}
 .prose hr{border:0;border-top:1px solid var(--border);margin:2.5rem 0}
 .callout{border-radius:var(--radius);padding:1rem 1.2rem;margin:1.5rem 0;border:1px solid var(--border);background:var(--surface)}
 .callout-tip{border-left:4px solid #2f9e44}.callout-info{border-left:4px solid var(--primary)}.callout-warning{border-left:4px solid #e67700}
-.ai-badge{font-size:.7rem;border:1px solid var(--border);border-radius:99px;padding:.05rem .5rem}
 
 .site-footer{border-top:1px solid var(--border);padding:2rem 0;color:var(--muted);font-size:.85rem}
 .site-footer .wrap{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
@@ -395,8 +394,7 @@ export function renderArticle(site: SiteInfo, theme: ThemeSpec, a: ArticleView, 
       : "";
   const body = html`<div class="wrap"><article class="article">
     <header>
-      <div class="meta">${a.tags.map((t) => html`<a class="tag" href="${site.base}/tag/${encodeURIComponent(t)}">${t}</a>`)}
-        ${a.source === "ai" ? html`<span class="ai-badge" title="Written with AI assistance">AI-assisted</span>` : ""}</div>
+      <div class="meta">${a.tags.map((t) => html`<a class="tag" href="${site.base}/tag/${encodeURIComponent(t)}">${t}</a>`)}</div>
       <h1>${a.title}</h1>
       ${a.summary ? html`<p class="lede">${a.summary}</p>` : ""}
       ${meta(a, theme)}
