@@ -122,6 +122,14 @@ a{color:var(--primary)}
 .hdr-bold-band .site-header{background:var(--primary);border:0}
 .hdr-bold-band .brand,.hdr-bold-band .nav a,.hdr-bold-band .tagline{color:var(--on-primary)}
 
+/* Header laid over an image hero: section names in white */
+.hdr-over{position:relative}
+.hdr-over .site-header{position:absolute;top:0;left:0;right:0;z-index:2;background:none;border:0}
+.hdr-over .brand,.hdr-over .nav a,.hdr-over .tagline{color:#fff;text-shadow:0 1px 3px rgb(0 0 0/.6)}
+.hdr-over .nav a:hover{color:#fff;text-decoration:underline}
+.hdr-over .hdr-centered .nav,.hdr-over.hdr-centered .nav{border-top-color:rgb(255 255 255/.5)}
+.hdr-over .hero-image{padding-top:calc(var(--gap)*9)}
+
 /* Hero */
 .hero{padding:calc(var(--gap)*3) 0 calc(var(--gap)*2)}
 .hero h1{margin:0 0 .4em}.hero p{color:var(--muted);font-size:1.2rem;max-width:44rem;margin:0}
@@ -217,6 +225,8 @@ interface ShellOpts {
   /** Open Graph title (defaults to `title`). */
   ogTitle?: string;
   ogType?: "website" | "article";
+  /** Draw the header over an image hero (white text). */
+  overHero?: boolean;
   /** Share image (absolute or root-relative URL). */
   image?: { url: string; alt: string } | null;
   /** Extra <meta> tags (article:published_time …). */
@@ -300,7 +310,7 @@ ${seoHead(site, o)}
 ${o.feedHref ? html`<link rel="alternate" type="application/rss+xml" title="${site.name}" href="${o.feedHref}">` : ""}
 ${fonts ? html`<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="${fonts}">` : ""}
 <style>${raw(themeVariables(theme))}${raw(BASE_CSS)}</style>
-</head><body class="${bodyClasses(theme)}">
+</head><body class="${bodyClasses(theme)}${o.overHero ? " hdr-over" : ""}">
 ${o.preview ?? ""}
 <header class="site-header"><div class="wrap">
   <a class="brand" href="${site.base || "/"}">${theme.logo.imageUrl && safeUrl(theme.logo.imageUrl) ? html`<img class="logo" src="${safeUrl(theme.logo.imageUrl)}" alt="${site.name}">` : site.name}</a>
@@ -356,11 +366,14 @@ export function renderHome(
   const heroTitle = opts.heading ?? (h.title || site.name);
   const heroSub = opts.heading ? "" : h.subtitle || site.tagline;
   const showHero = opts.heading !== undefined || h.enabled;
+  // Tag pages (with a heading) share the home page's image hero.
+  const imageHero = h.enabled && h.style === "image" && !!h.imageUrl;
+  const heroClass = opts.heading !== undefined && !imageHero ? "plain" : h.style;
   const heroStyle = h.style === "image" && h.imageUrl ? raw(` style="background-image:linear-gradient(rgb(0 0 0/.45),rgb(0 0 0/.45)),url('${escapeHtml(h.imageUrl)}')"`) : "";
   const ctaHref = h.ctaLabel ? safeUrl(h.ctaHref.startsWith("/") ? site.base + h.ctaHref : h.ctaHref) : null;
   const cta = ctaHref && !opts.heading ? html`<p class="hero-cta"><a class="cta" href="${ctaHref}">${h.ctaLabel}</a></p>` : "";
   const body = html`
-    ${showHero ? html`<section class="hero hero-${opts.heading ? "plain" : h.style} hero-${h.align}"${heroStyle}><div class="wrap">
+    ${showHero ? html`<section class="hero hero-${heroClass} hero-${h.align}"${heroStyle}><div class="wrap">
       <h1>${heroTitle}</h1>${heroSub ? html`<p>${heroSub}</p>` : ""}${cta}
     </div></section>` : ""}
     <div class="wrap">
@@ -374,6 +387,7 @@ export function renderHome(
     description: description || undefined,
     body,
     preview: opts.preview,
+    overHero: imageHero,
     feedHref: `${site.base}/feed.xml`,
     path: opts.path ?? "/",
     image: h.imageUrl ? { url: h.imageUrl, alt: "" } : null,
